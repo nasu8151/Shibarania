@@ -7,7 +7,7 @@ class Madoka(QWidget):
         
     
     def closeEvent(self,e):
-        yesno = QMessageBox.question(self,'','別に、閉じてしまってもよいのだろう？')
+        yesno = QMessageBox.question(self,'','別に、コレを閉じてしまっても構わんのだろう？')
         if yesno == QMessageBox.StandardButton.Yes:
             e.accept() # yesと答えたら閉じる
         else:
