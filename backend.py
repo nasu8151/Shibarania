@@ -114,6 +114,14 @@ def complete_task(service, tasklist_id: str, task_id: str) -> Dict[str, Any]:
         "completed": completed_time,
     }
     return service.tasks().patch(tasklist=tasklist_id, task=task_id, body=body).execute()
+def uncomplete_task(service, tasklist_id: str, task_id: str) -> Dict[str, Any]:
+    """指定タスクの完了を取り消して未完了に更新。"""
+    body = {
+        "status": "needsAction",
+        # completed をクリア（None または未指定）。未指定でも未完了扱いになるが明示的に None を送る。
+        "completed": None,
+    }
+    return service.tasks().patch(tasklist=tasklist_id, task=task_id, body=body).execute()
 
 
 def force_reauthorize() -> Credentials:
