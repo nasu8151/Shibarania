@@ -1,6 +1,7 @@
 import sys
 import typing
 import threading
+from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox
 from PyQt6.QtGui import QPalette, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
@@ -211,7 +212,7 @@ class Shibarania(QWidget):
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_label.setStyleSheet("QLabel { color : #101010; }")
+                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 14px; }")
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
@@ -275,7 +276,7 @@ class Shibarania(QWidget):
             return
         first_list_id = tasklists[0]["id"]
         self.google_tasklist_id = first_list_id
-        tasks = backend.list_tasks(service, first_list_id, show_completed=True, show_hidden=False)
+        tasks = backend.list_tasks(service, first_list_id, show_completed=True, show_hidden=True)
         current, done = self._convert_google_tasks_to_sections(tasks)
         self.tasks["現在のタスク"] = current
         self.tasks["完了済みのタスク"] = done
@@ -286,16 +287,27 @@ class Shibarania(QWidget):
 
     def _convert_google_tasks_to_sections(self, google_tasks: list[dict]) -> tuple[list[dict], list[dict]]:
         current: list[dict] = []
-        done: list[dict] = []
+        done_all: list[dict] = []
         for t in google_tasks:
             title = t.get("title") or "(無題)"
             desc = t.get("notes") or ""
-            entry = {"title": title, "description": desc, "id": t.get("id")}
+            entry = {"title": title, "description": desc, "id": t.get("id"), "completed": t.get("completed")}
             if t.get("status") == "completed":
-                done.append(entry)
+                done_all.append(entry)
             else:
                 current.append(entry)
-        return current, done
+        # 完了済みは完了日時で降順に並べ、最新2件のみ採用
+        def _dt(s: typing.Optional[str]) -> datetime:
+            if not s:
+                return datetime.min
+            try:
+                # RFC3339 'Z' を Python 互換に変換
+                return datetime.fromisoformat(s.replace("Z", "+00:00"))
+            except Exception:
+                return datetime.min
+        done_sorted = sorted(done_all, key=lambda e: _dt(e.get("completed")), reverse=True)
+        done_top2 = done_sorted[:2]
+        return current, done_top2
 
     def on_task_clicked(self, task: dict) -> None:
         """タスククリック時に完了/取り消しの確認を行い、OKならUIとAPIへ反映。"""
@@ -333,31 +345,13 @@ class Shibarania(QWidget):
                             raise RuntimeError("tasklist_id が不明です")
                         backend.uncomplete_task(service, list_id, task["id"])
                     except Exception as e2:
-                        warn = QMessageBox(self)
-                        warn.setIcon(QMessageBox.Icon.Warning)
-                        warn.setWindowTitle("エラー")
-                        warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                        warn.setDetailedText(str(e2))
-                        warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                        warn.exec()
+                        self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e2)}")
                         return
                 else:
-                    warn = QMessageBox(self)
-                    warn.setIcon(QMessageBox.Icon.Warning)
-                    warn.setWindowTitle("エラー")
-                    warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                    warn.setDetailedText(str(e))
-                    warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    warn.exec()
+                    self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
                     return
             except Exception as e:
-                warn = QMessageBox(self)
-                warn.setIcon(QMessageBox.Icon.Warning)
-                warn.setWindowTitle("エラー")
-                warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                warn.setDetailedText(str(e))
-                warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                warn.exec()
+                self.raise_error(str(e))
                 return
             # UI移動（現在のタスクへ）
             try:
@@ -399,31 +393,13 @@ class Shibarania(QWidget):
                             raise RuntimeError("tasklist_id が不明です")
                         backend.complete_task(service, list_id, task["id"])
                     except Exception as e2:
-                        warn = QMessageBox(self)
-                        warn.setIcon(QMessageBox.Icon.Warning)
-                        warn.setWindowTitle("エラー")
-                        warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                        warn.setDetailedText(str(e2))
-                        warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                        warn.exec()
+                        self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e2)}")
                         return
                 else:
-                    warn = QMessageBox(self)
-                    warn.setIcon(QMessageBox.Icon.Warning)
-                    warn.setWindowTitle("エラー")
-                    warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                    warn.setDetailedText(str(e))
-                    warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    warn.exec()
+                    self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
                     return
             except Exception as e:
-                warn = QMessageBox(self)
-                warn.setIcon(QMessageBox.Icon.Warning)
-                warn.setWindowTitle("エラー")
-                warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
-                warn.setDetailedText(str(e))
-                warn.setStandardButtons(QMessageBox.StandardButton.Ok)
-                warn.exec()
+                self.raise_error(str(e))
                 return
             # UI移動（完了済みへ）
             try:
@@ -492,13 +468,21 @@ class Shibarania(QWidget):
                 list_id = tls[0]["id"]
                 # 参照だけの更新なので問題なし
                 self.google_tasklist_id = list_id
-            tasks = backend.list_tasks(service, list_id, show_completed=True, show_hidden=False)
+            tasks = backend.list_tasks(service, list_id, show_completed=True, show_hidden=True)
             current, done = self._convert_google_tasks_to_sections(tasks)
             # UIスレッドへ反映依頼
             self.request_set_tasks.emit(current, done)
         except Exception:
             # ネットワークなどの一時的失敗は無視
             pass
+
+    def raise_error(self, message: str) -> None:
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("エラー")
+        msg.setText(message)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
 
 
 class Task(typing.TypedDict):
