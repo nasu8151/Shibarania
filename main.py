@@ -1,9 +1,29 @@
 import sys
 import typing
-import threading
-from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout
+from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox
 from PyQt6.QtGui import QPalette, QColor
 from PyQt6.QtCore import Qt, pyqtSignal
+import backend
+try:
+    from googleapiclient.errors import HttpError
+except Exception:
+    HttpError = Exception
+
+
+class TaskWidget(QFrame):
+    clicked = pyqtSignal(object)  # emits task dict
+
+    def __init__(self, task_data: dict):
+        super().__init__()
+        self.task_data = task_data
+        self.setFrameShape(QFrame.Shape.Box)
+        self.setLineWidth(1)
+
+    def mouseReleaseEvent(self, a0):
+        try:
+            self.clicked.emit(self.task_data)
+        finally:
+            super().mouseReleaseEvent(a0)
 
 
 class Shibarania(QWidget):
@@ -16,6 +36,9 @@ class Shibarania(QWidget):
         super().__init__()
         self.setWindowTitle("Shibarania")
         self.setGeometry(100, 100, 800, 480)
+
+        # Google Tasklist ID（先頭のリストを利用）
+        self.google_tasklist_id: typing.Optional[str] = None
 
         self.tasks = {
             "現在のタスク": [
@@ -52,6 +75,13 @@ class Shibarania(QWidget):
         self.request_add_task.connect(self.add_task)
         self.request_delete_task.connect(self.delete_task)
         self.request_move_task.connect(self.move_task)
+
+        # Google Tasks から初期タスクを読み込み
+        try:
+            self._load_tasks_from_google()
+        except Exception:
+            # 認可未設定やネットワーク障害時などは初期データのまま表示
+            pass
 
     def add_task(self, title: str, description: str = "") -> bool:
         """タイトルと説明で "現在のタスク" に追加して UI を更新する。"""
@@ -125,7 +155,7 @@ class Shibarania(QWidget):
         title_label = QLabel(title)
         title_label.setAutoFillBackground(True)
         title_label.setPalette(self._create_palette(color))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         title_label.setStyleSheet("QLabel { color : #101010; font-size : 28px; padding: 0px; }")
         title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         section_layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -136,24 +166,23 @@ class Shibarania(QWidget):
             row = 0
             col = 0
             for task in tasks:
-                task_frame = QFrame()
-                task_frame.setFrameShape(QFrame.Shape.Box)
-                task_frame.setLineWidth(1)
+                task_frame = TaskWidget(task)
 
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
-                task_title_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
                 task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 18px;}")
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
-                if task["description"]:
+                if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
                     task_content_label.setStyleSheet("QLabel { color : #101010; }")
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
+                task_frame.clicked.connect(self.on_task_clicked)
                 current_grid.addWidget(task_frame, row, col)
                 col += 1
                 if col >= 2:
@@ -161,24 +190,23 @@ class Shibarania(QWidget):
                     row += 1
         else:
             for task in tasks:
-                task_frame = QFrame()
-                task_frame.setFrameShape(QFrame.Shape.Box)
-                task_frame.setLineWidth(1)
+                task_frame = TaskWidget(task)
 
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
-                task_title_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
                 task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 18px;}")
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
-                if task["description"]:
+                if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
                     task_content_label.setStyleSheet("QLabel { color : #101010; }")
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
+                task_frame.clicked.connect(self.on_task_clicked)
                 section_layout.addWidget(task_frame)
 
         section_widget = QWidget()
@@ -229,52 +257,142 @@ class Shibarania(QWidget):
 
         self.update()
 
+    def _load_tasks_from_google(self) -> None:
+        """Google Tasks からタスクを取得して UI に反映する。"""
+        creds = backend.get_credentials()
+        service = backend.build_tasks_service(creds)
+        tasklists = backend.list_tasklists(service)
+        if not tasklists:
+            return
+        first_list_id = tasklists[0]["id"]
+        self.google_tasklist_id = first_list_id
+        tasks = backend.list_tasks(service, first_list_id, show_completed=True, show_hidden=False)
+        current, done = self._convert_google_tasks_to_sections(tasks)
+        self.tasks["現在のタスク"] = current
+        self.tasks["完了済みのタスク"] = done
+        try:
+            self.refresh_ui()
+        except Exception:
+            pass
+
+    def _convert_google_tasks_to_sections(self, google_tasks: list[dict]) -> tuple[list[dict], list[dict]]:
+        current: list[dict] = []
+        done: list[dict] = []
+        for t in google_tasks:
+            title = t.get("title") or "(無題)"
+            desc = t.get("notes") or ""
+            entry = {"title": title, "description": desc, "id": t.get("id")}
+            if t.get("status") == "completed":
+                done.append(entry)
+            else:
+                current.append(entry)
+        return current, done
+
+    def on_task_clicked(self, task: dict) -> None:
+        """タスククリック時に完了確認を行い、OKならUIとAPIへ反映。"""
+        # 完了済みセクションのタスクなら情報だけ表示して終了
+        if self._is_task_in_section(task, "完了済みのタスク"):
+            info = QMessageBox(self)
+            info.setIcon(QMessageBox.Icon.Information)
+            info.setWindowTitle("情報")
+            info.setText("このタスクはすでに完了済みです。")
+            info.setStandardButtons(QMessageBox.StandardButton.Ok)
+            info.exec()
+            return
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("確認")
+        msg.setText("このタスクを完了しますか？")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        result = msg.exec()
+        if result == QMessageBox.StandardButton.Ok:
+            # APIへ反映
+            try:
+                if self.google_tasklist_id and task.get("id"):
+                    creds = backend.get_credentials()
+                    service = backend.build_tasks_service(creds)
+                    backend.complete_task(service, self.google_tasklist_id, task["id"])
+                else:
+                    raise RuntimeError("tasklist_id または task id がありません")
+            except HttpError as e:
+                # スコープ不足 403 の場合は強制再認可して 1 回だけリトライ
+                try:
+                    resp = getattr(e, "resp", None)
+                    status = getattr(e, "status_code", None) or (resp.status if resp is not None else None)
+                except Exception:
+                    status = None
+                if status == 403:
+                    try:
+                        backend.force_reauthorize()
+                        creds = backend.get_credentials()
+                        service = backend.build_tasks_service(creds)
+                        list_id = self.google_tasklist_id
+                        if not list_id:
+                            raise RuntimeError("tasklist_id が不明です")
+                        backend.complete_task(service, list_id, task["id"])
+                    except Exception as e2:
+                        warn = QMessageBox(self)
+                        warn.setIcon(QMessageBox.Icon.Warning)
+                        warn.setWindowTitle("エラー")
+                        warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
+                        warn.setDetailedText(str(e2))
+                        warn.setStandardButtons(QMessageBox.StandardButton.Ok)
+                        warn.exec()
+                        return
+                else:
+                    warn = QMessageBox(self)
+                    warn.setIcon(QMessageBox.Icon.Warning)
+                    warn.setWindowTitle("エラー")
+                    warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
+                    warn.setDetailedText(str(e))
+                    warn.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    warn.exec()
+                    return
+            except Exception as e:
+                warn = QMessageBox(self)
+                warn.setIcon(QMessageBox.Icon.Warning)
+                warn.setWindowTitle("エラー")
+                warn.setText("Google Tasksへの反映に失敗しました。認可設定を確認してください。")
+                warn.setDetailedText(str(e))
+                warn.setStandardButtons(QMessageBox.StandardButton.Ok)
+                warn.exec()
+                return
+            # UI移動
+            try:
+                self._move_task_dict(task, "完了済みのタスク")
+            except Exception:
+                pass
+
+    def _move_task_dict(self, task: dict, destination: str) -> None:
+        if destination not in ("現在のタスク", "完了済みのタスク"):
+            return
+        # もとの場所から削除
+        for section in ["現在のタスク", "完了済みのタスク"]:
+            lst = self.tasks.get(section, [])
+            for i, t in enumerate(list(lst)):
+                if t is task or (task.get("id") and t.get("id") == task.get("id")):
+                    lst.pop(i)
+                    break
+        # 追加
+        if destination not in self.tasks or not isinstance(self.tasks[destination], list):
+            self.tasks[destination] = []
+        self.tasks[destination].append(task)
+        self.refresh_ui()
+
+    def _is_task_in_section(self, task: dict, section: str) -> bool:
+        lst = self.tasks.get(section, [])
+        for t in lst:
+            if t is task:
+                return True
+            if task.get("id") and t.get("id") == task.get("id"):
+                return True
+        return False
+
 
 class Task(typing.TypedDict):
     title: str
     description: str
-
-
-def _console_loop(win: Shibarania):
-    while True:
-        try:
-            mode = input("command [add/delete/move/quit]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if mode == "add":
-            td = input("title and description:").split(maxsplit=1)
-            if len(td) == 0:
-                print("タイトルが必要です")
-                continue
-            title = td[0]
-            desc = td[1] if len(td) > 1 else ""
-            win.request_add_task.emit(title, desc)
-            print("追加要求を送信しました")
-        elif mode == "delete":
-            title = input("title to delete: ").strip()
-            if not title:
-                print("タイトルが空です")
-                continue
-            win.request_delete_task.emit(title)
-            print("削除要求を送信しました")
-        elif mode == "move":
-            title = input("title to move: ").strip()
-            if not title:
-                print("タイトルが空です")
-                continue
-            dest = input("destination [現在のタスク/完了済みのタスク]: ").strip()
-            if dest not in ("現在のタスク", "完了済みのタスク"):
-                print("destination が不正です")
-                continue
-            win.request_move_task.emit(title, dest)
-            print("移動要求を送信しました")
-        elif mode == "quit":
-            inst = QApplication.instance()
-            if inst is not None:
-                inst.quit()
-            break
-        else:
-            print("不明なコマンドです: add/delete/move/quit から選んでください")
 
 
 if __name__ == "__main__":
@@ -282,8 +400,4 @@ if __name__ == "__main__":
     app.setQuitOnLastWindowClosed(True)
     window = Shibarania()
     window.show()
-
-    # Start console loop in a daemon thread so closing the window ends the process
-    threading.Thread(target=_console_loop, args=(window,), daemon=True).start()
-
     sys.exit(app.exec())
