@@ -1,10 +1,11 @@
 import sys
 import typing
 import threading
+import json
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox
-from PyQt6.QtGui import QPalette, QColor
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtGui import QPalette, QColor, QDrag
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData
 import backend
 try:
     from googleapiclient.errors import HttpError
@@ -13,19 +14,58 @@ except Exception:
 
 
 class TaskWidget(QFrame):
-    clicked = pyqtSignal(object)  # emits task dict
-
-    def __init__(self, task_data: dict):
+    def __init__(self, task_data: dict, section: str):
         super().__init__()
         self.task_data = task_data
+        self.section = section
         self.setFrameShape(QFrame.Shape.Box)
         self.setLineWidth(1)
 
-    def mouseReleaseEvent(self, a0):
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            mime = QMimeData()
+            payload = {
+                "id": self.task_data.get("id"),
+                "title": self.task_data.get("title"),
+                "description": self.task_data.get("description", ""),
+                "from": self.section,
+            }
+            mime.setData("application/x-shibarania-task", json.dumps(payload).encode("utf-8"))
+            drag = QDrag(self)
+            drag.setMimeData(mime)
+            drag.exec()
+        else:
+            super().mousePressEvent(e)
+
+
+class SectionWidget(QWidget):
+    dropped = pyqtSignal(object, str)  # payload, destination name
+
+    def __init__(self, section_name: str):
+        super().__init__()
+        self.section_name = section_name
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasFormat("application/x-shibarania-task"):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat("application/x-shibarania-task"):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e):
         try:
-            self.clicked.emit(self.task_data)
-        finally:
-            super().mouseReleaseEvent(a0)
+            data = e.mimeData().data("application/x-shibarania-task")
+            payload = json.loads(bytes(data).decode("utf-8"))
+            self.dropped.emit(payload, self.section_name)
+            e.acceptProposedAction()
+        except Exception:
+            e.ignore()
 
 
 class Shibarania(QWidget):
@@ -160,6 +200,11 @@ class Shibarania(QWidget):
         return False
 
     def _create_section(self, title, color, tasks):
+        section_widget = SectionWidget(title)
+        section_widget.setAutoFillBackground(True)
+        section_widget.setPalette(self._create_palette(color))
+        section_widget.dropped.connect(self.on_task_dropped)
+
         section_layout = QVBoxLayout()
 
         title_label = QLabel(title)
@@ -176,7 +221,7 @@ class Shibarania(QWidget):
             row = 0
             col = 0
             for task in tasks:
-                task_frame = TaskWidget(task)
+                task_frame = TaskWidget(task, title)
 
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
@@ -192,7 +237,6 @@ class Shibarania(QWidget):
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
-                task_frame.clicked.connect(self.on_task_clicked)
                 current_grid.addWidget(task_frame, row, col)
                 col += 1
                 if col >= 2:
@@ -200,7 +244,7 @@ class Shibarania(QWidget):
                     row += 1
         else:
             for task in tasks:
-                task_frame = TaskWidget(task)
+                task_frame = TaskWidget(task, title)
 
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
@@ -216,13 +260,9 @@ class Shibarania(QWidget):
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
-                task_frame.clicked.connect(self.on_task_clicked)
                 section_layout.addWidget(task_frame)
 
-        section_widget = QWidget()
         section_widget.setLayout(section_layout)
-        section_widget.setAutoFillBackground(True)
-        section_widget.setPalette(self._create_palette(color))
         return section_widget
 
     def _create_palette(self, color):
@@ -309,103 +349,66 @@ class Shibarania(QWidget):
         done_top2 = done_sorted[:2]
         return current, done_top2
 
-    def on_task_clicked(self, task: dict) -> None:
-        """タスククリック時に完了/取り消しの確認を行い、OKならUIとAPIへ反映。"""
-        if self._is_task_in_section(task, "完了済みのタスク"):
-            # 完了取り消しの確認
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Question)
-            msg.setWindowTitle("確認")
-            msg.setText("このタスクの完了を取り消しますか？")
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-            result = msg.exec()
-            if result != QMessageBox.StandardButton.Ok:
-                return
-            # APIへ反映（未完了へ）
-            try:
-                if self.google_tasklist_id and task.get("id"):
-                    creds = backend.get_credentials()
-                    service = backend.build_tasks_service(creds)
-                    backend.uncomplete_task(service, self.google_tasklist_id, task["id"])
-                else:
-                    raise RuntimeError("tasklist_id または task id がありません")
-            except HttpError as e:
-                try:
-                    resp = getattr(e, "resp", None)
-                    status = getattr(e, "status_code", None) or (resp.status if resp is not None else None)
-                except Exception:
-                    status = None
-                if status == 403:
-                    try:
-                        backend.force_reauthorize()
-                        creds = backend.get_credentials()
-                        service = backend.build_tasks_service(creds)
-                        list_id = self.google_tasklist_id
-                        if not list_id:
-                            raise RuntimeError("tasklist_id が不明です")
-                        backend.uncomplete_task(service, list_id, task["id"])
-                    except Exception as e2:
-                        self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e2)}")
-                        return
-                else:
-                    self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
-                    return
-            except Exception as e:
-                self.raise_error(str(e))
-                return
-            # UI移動（現在のタスクへ）
-            try:
-                self._move_task_dict(task, "現在のタスク")
-            except Exception:
-                pass
+    def on_task_dropped(self, payload: dict, destination: str) -> None:
+        """ドラッグ&ドロップで別セクションへ移動したときにAPI/UI反映。"""
+        # 現在のUIから該当タスクを見つける（id 優先）
+        task = None
+        for sec in ["現在のタスク", "完了済みのタスク"]:
+            for t in self.tasks.get(sec, []):
+                if payload.get("id") and t.get("id") == payload.get("id"):
+                    task = t
+                    break
+                if not payload.get("id") and t.get("title") == payload.get("title"):
+                    task = t
+                    break
+            if task:
+                break
+        if not task:
+            return
+        source = "完了済みのタスク" if self._is_task_in_section(task, "完了済みのタスク") else "現在のタスク"
+        if source == destination:
             return
 
-        # 未完了 → 完了確認
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setWindowTitle("確認")
-        msg.setText("このタスクを完了しますか？")
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        result = msg.exec()
-        if result == QMessageBox.StandardButton.Ok:
-            # APIへ反映（完了へ）
+        try:
+            if not (self.google_tasklist_id and task.get("id")):
+                raise RuntimeError("tasklist_id または task id がありません")
+            creds = backend.get_credentials()
+            service = backend.build_tasks_service(creds)
+            if destination == "完了済みのタスク":
+                backend.complete_task(service, self.google_tasklist_id, task["id"])
+            else:
+                backend.uncomplete_task(service, self.google_tasklist_id, task["id"])
+        except HttpError as e:
             try:
-                if self.google_tasklist_id and task.get("id"):
+                resp = getattr(e, "resp", None)
+                status = getattr(e, "status_code", None) or (resp.status if resp is not None else None)
+            except Exception:
+                status = None
+            if status == 403:
+                try:
+                    backend.force_reauthorize()
                     creds = backend.get_credentials()
                     service = backend.build_tasks_service(creds)
-                    backend.complete_task(service, self.google_tasklist_id, task["id"])
-                else:
-                    raise RuntimeError("tasklist_id または task id がありません")
-            except HttpError as e:
-                # 403時は再認可して1回リトライ
-                try:
-                    resp = getattr(e, "resp", None)
-                    status = getattr(e, "status_code", None) or (resp.status if resp is not None else None)
-                except Exception:
-                    status = None
-                if status == 403:
-                    try:
-                        backend.force_reauthorize()
-                        creds = backend.get_credentials()
-                        service = backend.build_tasks_service(creds)
-                        list_id = self.google_tasklist_id
-                        if not list_id:
-                            raise RuntimeError("tasklist_id が不明です")
-                        backend.complete_task(service, list_id, task["id"])
-                    except Exception as e2:
-                        self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e2)}")
-                        return
-                else:
-                    self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
+                    if not self.google_tasklist_id:
+                        raise RuntimeError("tasklist_id が不明です")
+                    if destination == "完了済みのタスク":
+                        backend.complete_task(service, self.google_tasklist_id, task["id"])
+                    else:
+                        backend.uncomplete_task(service, self.google_tasklist_id, task["id"])
+                except Exception as e2:
+                    self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e2)}")
                     return
-            except Exception as e:
-                self.raise_error(str(e))
+            else:
+                self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
                 return
-            # UI移動（完了済みへ）
-            try:
-                self._move_task_dict(task, "完了済みのタスク")
-            except Exception:
-                pass
+        except Exception as e:
+            self.raise_error(str(e))
+            return
+
+        try:
+            self._move_task_dict(task, destination)
+        except Exception:
+            pass
 
     def _move_task_dict(self, task: dict, destination: str) -> None:
         if destination not in ("現在のタスク", "完了済みのタスク"):
