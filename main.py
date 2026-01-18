@@ -21,8 +21,10 @@ class TaskWidget(QFrame):
         self.setFrameShape(QFrame.Shape.Box)
         self.setLineWidth(1)
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
+    def mousePressEvent(self, a0):
+        if not a0:
+            return
+        if a0.button() == Qt.MouseButton.LeftButton:
             mime = QMimeData()
             payload = {
                 "id": self.task_data.get("id"),
@@ -35,7 +37,7 @@ class TaskWidget(QFrame):
             drag.setMimeData(mime)
             drag.exec()
         else:
-            super().mousePressEvent(e)
+            super().mousePressEvent(a0)
 
 
 class SectionWidget(QWidget):
@@ -46,26 +48,44 @@ class SectionWidget(QWidget):
         self.section_name = section_name
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasFormat("application/x-shibarania-task"):
-            e.acceptProposedAction()
+    def dragEnterEvent(self, a0):
+        if not a0:
+            return
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
+        if mime.hasFormat("application/x-shibarania-task"):
+            a0.acceptProposedAction()
         else:
-            e.ignore()
+            a0.ignore()
 
-    def dragMoveEvent(self, e):
-        if e.mimeData().hasFormat("application/x-shibarania-task"):
-            e.acceptProposedAction()
+    def dragMoveEvent(self, a0):
+        if not a0:
+            return
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
+        if mime.hasFormat("application/x-shibarania-task"):
+            a0.acceptProposedAction()
         else:
-            e.ignore()
-
-    def dropEvent(self, e):
+            a0.ignore()
+    
+    def dropEvent(self, a0):
+        if not a0:
+            return
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
         try:
-            data = e.mimeData().data("application/x-shibarania-task")
+            data = mime.data("application/x-shibarania-task")
             payload = json.loads(bytes(data).decode("utf-8"))
             self.dropped.emit(payload, self.section_name)
-            e.acceptProposedAction()
+            a0.acceptProposedAction()
         except Exception:
-            e.ignore()
+            a0.ignore()
 
 
 class Shibarania(QWidget):
@@ -226,14 +246,14 @@ class Shibarania(QWidget):
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
                 task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 18px;}")
+                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 24px;}")
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_label.setStyleSheet("QLabel { color : #101010; }")
+                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 18px; }")
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
@@ -249,14 +269,14 @@ class Shibarania(QWidget):
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
                 task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 18px;}")
+                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 24px;}")
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 14px; }")
+                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 18px; }")
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
@@ -497,7 +517,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
     window = Shibarania()
-    if "--fullscreen" in sys.argv:
+    if "--fullscreen" in sys.argv or "-f" in sys.argv:
         window.showFullScreen()
     else:
         window.show()

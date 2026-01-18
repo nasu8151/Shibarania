@@ -7,6 +7,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 
 # 読み書き可能スコープ（完了状態の反映に必要）
 SCOPES = ["https://www.googleapis.com/auth/tasks"]
@@ -35,19 +36,29 @@ def get_credentials() -> Credentials:
             pass
 
     if needs_flow:
-        if creds and creds.expired and creds.refresh_token:
-            # まずリフレッシュを試みる（スコープは増えない可能性あり）
+        if creds and creds.refresh_token:
+            # リフレッシュを試み、失敗（invalid_grant 等）なら再認可に切り替え
             try:
                 creds.refresh(Request())
+            except RefreshError:
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                if not flow:
+                    raise FileNotFoundError(f"{CREDENTIALS_FILE} が見つかりません。")
+                creds = cast(Credentials, flow.run_local_server(port=0))
             except Exception:
-                pass
-            # スコープ不足が残っているならフローを実行
+                # その他の失敗でも再認可へフォールバック
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                if not flow:
+                    raise FileNotFoundError(f"{CREDENTIALS_FILE} が見つかりません。")
+                creds = cast(Credentials, flow.run_local_server(port=0))
+            # スコープ不足が残っている場合も再認可
             if not (hasattr(creds, "has_scopes") and creds.has_scopes(SCOPES)):
                 flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
                 if not flow:
                     raise FileNotFoundError(f"{CREDENTIALS_FILE} が見つかりません。")
                 creds = cast(Credentials, flow.run_local_server(port=0))
         else:
+            # refresh_token が無い、または creds が無効な場合は認可フローへ
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             if not flow:
                 raise FileNotFoundError(f"{CREDENTIALS_FILE} が見つかりません。")
@@ -136,7 +147,11 @@ def force_reauthorize() -> Credentials:
 
 
 def main():
-    creds = get_credentials()
+    # トークン失効や取り消し時も再認可にフォールバック
+    try:
+        creds = get_credentials()
+    except RefreshError:
+        creds = force_reauthorize()
     service = build_tasks_service(creds)
 
     # 1) タスクリスト一覧を表示
@@ -151,7 +166,7 @@ def main():
 
     # 2) 例として先頭のタスクリストのタスクを取得
     first_list_id = tasklists[0]["id"]
-    tasks = list_tasks(service, first_list_id, show_completed=True, show_hidden=False)
+    tasks = list_tasks(service, first_list_id, show_completed=True, show_hidden=True)
 
     print(f"\n[{tasklists[0].get('title')}] のタスク:")
     if not tasks:
