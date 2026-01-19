@@ -2,10 +2,11 @@ import sys
 import typing
 import threading
 import json
+import os
 from datetime import datetime
-from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox
-from PyQt6.QtGui import QPalette, QColor, QDrag
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData
+from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox, QGraphicsOpacityEffect
+from PyQt6.QtGui import QPalette, QColor, QDrag, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPropertyAnimation
 import backend
 try:
     from googleapiclient.errors import HttpError
@@ -100,16 +101,19 @@ class Shibarania(QWidget):
         self.setWindowTitle("Shibarania")
         self.setGeometry(100, 100, 800, 480)
 
+        # ポップアップ表示時間（ミリ秒）
+        self.popup_duration_ms: int = 4000
+
         # Google Tasklist ID（先頭のリストを利用）
         self.google_tasklist_id: typing.Optional[str] = None
 
         self.tasks = {
             "現在のタスク": [
-                {"title": "TaskB", "description": " "},
+                {"title": "TaskB", "description": "Example"},
                 {"title": "TaskD", "description": " "},
                 {"title": "TaskE", "description": " "},
                 {"title": "TaskF", "description": " "},
-                {"title": "TaskG", "description": "Omochikun!?!?"},
+                {"title": "TaskG", "description": " "},
             ],
             "完了済みのタスク": [
                 {"title": "TaskO", "description": " "},
@@ -429,6 +433,12 @@ class Shibarania(QWidget):
             self._move_task_dict(task, destination)
         except Exception:
             pass
+        # 完了時のポップアップ表示
+        if destination == "完了済みのタスク":
+            try:
+                self._show_completion_popup(title=task.get("title", ""), duration_ms=self.popup_duration_ms)
+            except Exception:
+                pass
 
     def _move_task_dict(self, task: dict, destination: str) -> None:
         if destination not in ("現在のタスク", "完了済みのタスク"):
@@ -506,6 +516,80 @@ class Shibarania(QWidget):
         msg.setText(message)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
+
+    def _show_completion_popup(self, title: str = "", duration_ms: int | None = None) -> None:
+        """完了時に画像＋メッセージを中央に表示してフェードアウト。"""
+        # 画像パス解決（スクリプト相対）
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        img_path = os.path.join(base_dir, "assets", "rect1.png")
+
+        # オーバーレイ用コンテナ
+        popup = QWidget(self)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        popup.setStyleSheet("QWidget { background: transparent; }")
+
+        vbox = QVBoxLayout()
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(8)
+        popup.setLayout(vbox)
+
+        # 背景画像（任意）
+        img_label = QLabel(popup)
+        pix = QPixmap(img_path)
+        if not pix.isNull():
+            img_label.setPixmap(pix)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            vbox.addWidget(img_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # タスクタイトル
+        title_label = QLabel(popup)
+        title_label.setText(title or "タスク")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("QLabel { color: #101010; font-size: 24px; font-weight: bold; }")
+        vbox.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # 完了メッセージ
+        done_label = QLabel(popup)
+        done_label.setText("完了しました！")
+        done_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        done_label.setStyleSheet("QLabel { color: #101010; font-size: 20px; }")
+        vbox.addWidget(done_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # ねぎらいの言葉
+        thanks_label = QLabel(popup)
+        thanks_label.setText("お疲れさま！よく頑張りました。")
+        thanks_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thanks_label.setStyleSheet("QLabel { color: #2a6; font-size: 18px; }")
+        vbox.addWidget(thanks_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        popup.adjustSize()
+
+        # 画面中央へ配置
+        w = self.width()
+        h = self.height()
+        pw = popup.width()
+        ph = popup.height()
+        popup.move(max(0, (w - pw) // 2), max(0, (h - ph) // 2))
+        popup.show()
+
+        # フェードアウトアニメーション
+        effect = QGraphicsOpacityEffect(popup)
+        popup.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(duration_ms if duration_ms is not None else 2000)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        popup._anim = anim  # type: ignore[attr-defined]
+
+        def _cleanup():
+            try:
+                popup.hide()
+                popup.deleteLater()
+            except Exception:
+                pass
+
+        anim.finished.connect(_cleanup)
+        anim.start()
 
 
 class Task(typing.TypedDict):
