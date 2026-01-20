@@ -96,10 +96,13 @@ class Shibarania(QWidget):
     request_move_task = pyqtSignal(str, str)  # title, destination section
     request_set_tasks = pyqtSignal(list, list)  # current, done
 
-    def __init__(self):
+    def __init__(self, fullscreen: bool = False):
         super().__init__()
         self.setWindowTitle("Shibarania")
         self.setGeometry(100, 100, 800, 480)
+
+        self.is_fullscreen = fullscreen
+        self.ui_scale = 0.85 if self.is_fullscreen else 1.0
 
         # ポップアップ表示時間（ミリ秒）
         self.popup_duration_ms: int = 4000
@@ -122,6 +125,9 @@ class Shibarania(QWidget):
 
         # レイアウト作成
         layout = QHBoxLayout()
+        if self.is_fullscreen:
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(8)
 
         # セクション作成
         current_section = self._create_section(
@@ -230,12 +236,16 @@ class Shibarania(QWidget):
         section_widget.dropped.connect(self.on_task_dropped)
 
         section_layout = QVBoxLayout()
+        if self.is_fullscreen:
+            section_layout.setContentsMargins(6, 6, 6, 6)
+            section_layout.setSpacing(6)
 
         title_label = QLabel(title)
         title_label.setAutoFillBackground(True)
         title_label.setPalette(self._create_palette(color))
         title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        title_label.setStyleSheet("QLabel { color : #101010; font-size : 28px; padding: 0px; }")
+        title_font = int(28 * self.ui_scale)
+        title_label.setStyleSheet(f"QLabel {{ color : #101010; font-size : {title_font}px; padding: 0px; }}")
         title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         section_layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
@@ -250,14 +260,20 @@ class Shibarania(QWidget):
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
                 task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 24px;}")
+                task_title_font = int(24 * self.ui_scale)
+                task_title_label.setStyleSheet(
+                    f"QLabel {{ font-weight: bold; color : #101010; font-size : {task_title_font}px;}}"
+                )
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 18px; }")
+                    task_content_font = int(18 * self.ui_scale)
+                    task_content_label.setStyleSheet(
+                        f"QLabel {{ color : #101010; font-size : {task_content_font}px; }}"
+                    )
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
@@ -273,14 +289,20 @@ class Shibarania(QWidget):
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
                 task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_label.setStyleSheet("QLabel { font-weight: bold; color : #101010; font-size : 24px;}")
+                task_title_font = int(24 * self.ui_scale)
+                task_title_label.setStyleSheet(
+                    f"QLabel {{ font-weight: bold; color : #101010; font-size : {task_title_font}px;}}"
+                )
                 task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 task_layout.addWidget(task_title_label)
 
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
                     task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_label.setStyleSheet("QLabel { color : #101010; font-size : 18px; }")
+                    task_content_font = int(18 * self.ui_scale)
+                    task_content_label.setStyleSheet(
+                        f"QLabel {{ color : #101010; font-size : {task_content_font}px; }}"
+                    )
                     task_layout.addWidget(task_content_label)
 
                 task_frame.setLayout(task_layout)
@@ -600,8 +622,9 @@ class Task(typing.TypedDict):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
-    window = Shibarania()
-    if "--fullscreen" in sys.argv or "-f" in sys.argv:
+    fullscreen = "--fullscreen" in sys.argv or "-f" in sys.argv
+    window = Shibarania(fullscreen=fullscreen)
+    if fullscreen:
         window.showFullScreen()
     else:
         window.show()
