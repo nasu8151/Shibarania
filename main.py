@@ -6,9 +6,22 @@ import threading
 import json
 import os
 from datetime import datetime
-from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QVBoxLayout, QWidget, QFrame, QSizePolicy, QGridLayout, QMessageBox, QGraphicsOpacityEffect
-from PyQt6.QtGui import QPalette, QColor, QDrag, QPixmap
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPropertyAnimation
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
+    QFrame,
+    QSizePolicy,
+    QGridLayout,
+    QMessageBox,
+    QGraphicsOpacityEffect,
+    QPushButton,
+)
+from PyQt6.QtGui import QPalette, QColor, QDrag, QPixmap, QMouseEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPropertyAnimation, QPoint, QEvent
+from PyQt6.QtWidgets import QGraphicsDropShadowEffect
 import backend
 try:
     from googleapiclient.errors import HttpError
@@ -23,28 +36,155 @@ class TaskWidget(QFrame):
         self.section = section
         self.setFrameShape(QFrame.Shape.Box)
         self.setLineWidth(1)
+        self._press_timer = QTimer(self)
+        self._press_timer.setSingleShot(True)
+        self._press_timer.timeout.connect(self._on_long_press)
+        self._hint_timer = QTimer(self)
+        self._hint_timer.setSingleShot(True)
+        self._hint_timer.timeout.connect(self._show_hint_arrow)
+        self._press_feedback_timer = QTimer(self)
+        self._press_feedback_timer.setSingleShot(True)
+        self._press_feedback_timer.timeout.connect(self._apply_press_feedback)
+        self._press_pos: QPoint | None = None
+        self._long_pressed = False
+        self._hint_label: QLabel | None = None
+        self._hint_effect: QGraphicsOpacityEffect | None = None
+        self._press_active = False
+        self._is_focus = False
+        self._focus_shadow: QGraphicsDropShadowEffect | None = None
 
     def mousePressEvent(self, a0):
         if not a0:
             return
         if a0.button() == Qt.MouseButton.LeftButton:
-            mime = QMimeData()
-            payload = {
-                "id": self.task_data.get("id"),
-                "title": self.task_data.get("title"),
-                "description": self.task_data.get("description", ""),
-                "from": self.section,
-            }
-            mime.setData("application/x-shibarania-task", json.dumps(payload).encode("utf-8"))
-            drag = QDrag(self)
-            drag.setMimeData(mime)
-            drag.exec()
+            self._press_pos = a0.pos()
+            self._long_pressed = False
+            self._press_feedback_timer.start(80)
+            self._press_timer.start(300)
         else:
             super().mousePressEvent(a0)
 
+    def mouseMoveEvent(self, a0):
+        if not a0 or self._press_pos is None:
+            return
+        if not self._long_pressed:
+            # 長押し前に大きく動いたらキャンセル
+            if (a0.pos() - self._press_pos).manhattanLength() > 6:
+                self._cancel_press()
+            return
+        # 長押し成立後はドラッグ開始
+        self._start_drag()
+
+    def mouseReleaseEvent(self, a0):
+        self._cancel_press()
+        super().mouseReleaseEvent(a0)
+
+    def _apply_press_feedback(self) -> None:
+        # 影を少し濃く、背景色をわずかに暗く
+        self._press_active = True
+        self._update_style()
+
+    def _on_long_press(self) -> None:
+        self._long_pressed = True
+        # 浮かせる
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(16)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.setGraphicsEffect(shadow)
+        # ヒント矢印は150ms後
+        self._hint_timer.start(150)
+        # 長押し成立時に完了パネルを表示
+        try:
+            win = self.window()
+            if hasattr(win, "_show_history_panel"):
+                win._show_history_panel()
+        except Exception:
+            pass
+
+    def _show_hint_arrow(self) -> None:
+        if self._hint_label is not None:
+            return
+        self._hint_label = QLabel("→", self)
+        self._hint_label.setStyleSheet("QLabel { color: rgba(255,255,255,180); font-size: 20px; }")
+        self._hint_label.adjustSize()
+        self._hint_label.move(self.width() - self._hint_label.width() - 8, 8)
+        self._hint_effect = QGraphicsOpacityEffect(self._hint_label)
+        self._hint_label.setGraphicsEffect(self._hint_effect)
+        anim = QPropertyAnimation(self._hint_effect, b"opacity", self)
+        anim.setDuration(150)
+        anim.setStartValue(0.0)
+        anim.setEndValue(0.35)
+        self._hint_label._anim = anim  # type: ignore[attr-defined]
+        self._hint_label.show()
+        anim.start()
+
+    def _start_drag(self) -> None:
+        mime = QMimeData()
+        payload = {
+            "id": self.task_data.get("id"),
+            "title": self.task_data.get("title"),
+            "description": self.task_data.get("description", ""),
+            "from": self.section,
+        }
+        mime.setData("application/x-shibarania-task", json.dumps(payload).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec()
+        self._cancel_press()
+
+    def _cancel_press(self) -> None:
+        self._press_timer.stop()
+        self._press_feedback_timer.stop()
+        self._hint_timer.stop()
+        self._press_pos = None
+        self._long_pressed = False
+        self._press_active = False
+        # フォーカス影を維持
+        if self._is_focus:
+            try:
+                shadow = QGraphicsDropShadowEffect(self)
+                shadow.setBlurRadius(22)
+                shadow.setOffset(0, 4)
+                shadow.setColor(QColor(0, 0, 0, 90))
+                self._focus_shadow = shadow
+                self.setGraphicsEffect(shadow)
+            except Exception:
+                self._focus_shadow = None
+                self.setGraphicsEffect(None)
+        else:
+            self.setGraphicsEffect(None)
+        self._update_style()
+        if self._hint_label:
+            self._hint_label.hide()
+            self._hint_label.deleteLater()
+            self._hint_label = None
+            self._hint_effect = None
+
+    def set_focus_enabled(self, enabled: bool) -> None:
+        self._is_focus = enabled
+        if enabled:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(22)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 90))
+            self._focus_shadow = shadow
+            self.setGraphicsEffect(shadow)
+        else:
+            self._focus_shadow = None
+        self._update_style()
+
+    def _update_style(self) -> None:
+        styles = []
+        if self._is_focus:
+            styles.append("QFrame { border: 2px solid rgba(120, 200, 255, 120); }")
+        if self._press_active:
+            styles.append("QFrame { background-color: rgba(0,0,0,0.03); }")
+        self.setStyleSheet(" ".join(styles))
+
 
 class SectionWidget(QWidget):
-    dropped = pyqtSignal(object, str)  # payload, destination name
+    dropped = pyqtSignal(object, str, QPoint)  # payload, destination name, global pos
 
     def __init__(self, section_name: str):
         super().__init__()
@@ -84,8 +224,8 @@ class SectionWidget(QWidget):
             return
         try:
             data = mime.data("application/x-shibarania-task")
-            payload = json.loads(bytes(data).decode("utf-8"))
-            self.dropped.emit(payload, self.section_name)
+            payload = json.loads(bytes(data.data()).decode("utf-8"))
+            self.dropped.emit(payload, self.section_name, self.mapToGlobal(a0.position().toPoint()))
             a0.acceptProposedAction()
         except Exception:
             a0.ignore()
@@ -105,6 +245,15 @@ class Shibarania(QWidget):
 
         self.is_fullscreen = fullscreen
         self.ui_scale = 0.85 if self.is_fullscreen else 1.0
+        self._focus_task_id: str | None = None
+
+        # エッジスワイプ/メニュー用
+        self._edge_press_pos: QPoint | None = None
+        self._edge_mode: str | None = None  # "right" or "top"
+        self._edge_swipe_distance = 0
+        self._edge_hold_timer = QTimer(self)
+        self._edge_hold_timer.setSingleShot(True)
+        self._edge_hold_timer.timeout.connect(self._edge_hold_timeout)
 
         # ポップアップ表示時間（ミリ秒）
         self.popup_duration_ms: int = 4000
@@ -138,13 +287,34 @@ class Shibarania(QWidget):
         current_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(current_section, 2)
 
-        done_section = self._create_section(
-            "完了済みのタスク", QColor(200, 200, 255), self.tasks["完了済みのタスク"]
-        )
-        done_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(done_section, 1)
-
         self.setLayout(layout)
+
+        # 完了済み履歴パネル（右端スワイプ）
+        self._history_panel = SectionWidget("完了済みのタスク")
+        self._history_panel.setParent(self)
+        self._history_panel.setAutoFillBackground(True)
+        self._history_panel.setStyleSheet("QWidget { background-color: rgba(200, 200, 255, 180); }")
+        self._history_panel.dropped.connect(self.on_task_dropped)
+        self._history_panel_layout = QVBoxLayout()
+        self._history_panel_layout.setContentsMargins(12, 12, 12, 12)
+        self._history_panel_layout.setSpacing(8)
+        self._history_panel.setLayout(self._history_panel_layout)
+        self._history_panel.hide()
+        self._history_panel_timer = QTimer(self)
+        self._history_panel_timer.setSingleShot(True)
+        self._history_panel_timer.timeout.connect(self._hide_history_panel)
+
+        # 上端メニュー
+        self._menu_panel = QWidget(self)
+        self._menu_panel.setStyleSheet("QWidget { background-color: rgba(0,0,0,160); }")
+        self._menu_panel_layout = QVBoxLayout()
+        self._menu_panel_layout.setContentsMargins(16, 16, 16, 16)
+        self._menu_panel_layout.setSpacing(10)
+        self._menu_panel.setLayout(self._menu_panel_layout)
+        self._menu_panel.hide()
+        self._build_menu_contents()
+
+        self.installEventFilter(self)
 
         # Connect signals to perform operations in the UI thread
         self.request_add_task.connect(self.add_task)
@@ -164,6 +334,8 @@ class Shibarania(QWidget):
             self._start_periodic_sync(60_000)
         except Exception:
             pass
+
+        self._update_history_panel()
 
     def add_task(self, title: str, description: str = "") -> bool:
         """タイトルと説明で "現在のタスク" に追加して UI を更新する。"""
@@ -256,8 +428,12 @@ class Shibarania(QWidget):
             section_layout.addLayout(current_grid)
             row = 0
             col = 0
-            for task in tasks:
+            for idx, task in enumerate(tasks):
                 task_frame = TaskWidget(task, title)
+                # フォーカスタスクの強調（先頭を採用）
+                if idx == 0:
+                    self._apply_focus_style(task_frame)
+                    self._focus_task_id = task.get("id") or task.get("title")
 
                 task_layout = QVBoxLayout()
                 task_title_label = QLabel(task["title"])
@@ -347,13 +523,8 @@ class Shibarania(QWidget):
         current_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(current_section)
 
-        done_section = self._create_section(
-            "完了済みのタスク", QColor(200, 200, 255), self.tasks.get("完了済みのタスク", [])
-        )
-        done_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        main_layout.addWidget(done_section)
-
         self.update()
+        self._update_history_panel()
 
     def _load_tasks_from_google(self) -> None:
         """Google Tasks からタスクを取得して UI に反映する。"""
@@ -397,7 +568,7 @@ class Shibarania(QWidget):
         done_top2 = done_sorted[:2]
         return current, done_top2
 
-    def on_task_dropped(self, payload: dict, destination: str) -> None:
+    def on_task_dropped(self, payload: dict, destination: str, global_pos: QPoint | None = None) -> None:
         """ドラッグ&ドロップで別セクションへ移動したときにAPI/UI反映。"""
         # 現在のUIから該当タスクを見つける（id 優先）
         task = None
@@ -416,6 +587,13 @@ class Shibarania(QWidget):
         source = "完了済みのタスク" if self._is_task_in_section(task, "完了済みのタスク") else "現在のタスク"
         if source == destination:
             return
+
+        # 完了判定は「完了パネルが表示中」かつ「ドロップ位置が完了パネル内」
+        if destination == "完了済みのタスク":
+            if not self._history_panel.isVisible():
+                return
+            if global_pos is not None and not self._history_panel.geometry().contains(self.mapFromGlobal(global_pos)):
+                return
 
         try:
             if not (self.google_tasklist_id and task.get("id")):
@@ -461,6 +639,8 @@ class Shibarania(QWidget):
         if destination == "完了済みのタスク":
             try:
                 self._show_completion_popup(title=task.get("title", ""), duration_ms=self.popup_duration_ms)
+                self._show_completion_effects()
+                self._nudge_history_panel()
             except Exception:
                 pass
 
@@ -541,6 +721,56 @@ class Shibarania(QWidget):
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
 
+    def _apply_focus_style(self, widget: QWidget) -> None:
+        """フォーカスタスクを強調表示。"""
+        if isinstance(widget, TaskWidget):
+            widget.set_focus_enabled(True)
+
+    def _show_completion_effects(self) -> None:
+        """完了時の流れ効果とチェック表示（簡易版）。"""
+        flow = QWidget(self)
+        flow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        flow.setStyleSheet("QWidget { background-color: rgba(255,255,255,0); }")
+        flow.setGeometry(0, 0, self.width(), self.height())
+        flow.show()
+
+        bar = QWidget(flow)
+        bar.setStyleSheet("QWidget { background-color: rgba(255,255,255,100); }")
+        bar.setGeometry(-self.width() // 3, 0, self.width() // 3, self.height())
+        bar.show()
+
+        anim = QPropertyAnimation(bar, b"pos", self)
+        anim.setDuration(150)
+        anim.setStartValue(QPoint(-self.width() // 3, 0))
+        anim.setEndValue(QPoint(self.width(), 0))
+        bar._anim = anim  # type: ignore[attr-defined]
+
+        check = QLabel("✓", self)
+        check.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        check.setStyleSheet("QLabel { color: rgba(200,255,200,200); font-size: 48px; }")
+        check.adjustSize()
+        check.move((self.width() - check.width()) // 2, (self.height() - check.height()) // 2)
+        check.show()
+
+        check_effect = QGraphicsOpacityEffect(check)
+        check.setGraphicsEffect(check_effect)
+        check_anim = QPropertyAnimation(check_effect, b"opacity", self)
+        check_anim.setDuration(250)
+        check_anim.setStartValue(0.0)
+        check_anim.setEndValue(1.0)
+        check._anim = check_anim  # type: ignore[attr-defined]
+
+        def _cleanup():
+            try:
+                check.deleteLater()
+                flow.deleteLater()
+            except Exception:
+                pass
+
+        anim.finished.connect(_cleanup)
+        anim.start()
+        check_anim.start()
+
     def _show_completion_popup(self, title: str = "", duration_ms: int | None = None) -> None:
         """完了時に画像＋メッセージを中央に表示してフェードアウト。"""
         # 画像パス解決（スクリプト相対）
@@ -614,6 +844,200 @@ class Shibarania(QWidget):
 
         anim.finished.connect(_cleanup)
         anim.start()
+
+    def _build_menu_contents(self) -> None:
+        """上端メニューの仮コンテンツを構築。"""
+        title = QLabel("メニュー", self._menu_panel)
+        title.setStyleSheet("QLabel { color: white; font-size: 20px; font-weight: bold; }")
+        self._menu_panel_layout.addWidget(title)
+
+        exit_btn = QPushButton("終了", self._menu_panel)
+        exit_btn.setStyleSheet(
+            "QPushButton { background-color: rgba(255,255,255,0.12); color: white; padding: 8px; }"
+        )
+        exit_btn.clicked.connect(self._action_exit)
+        self._menu_panel_layout.addWidget(exit_btn)
+
+        ver_btn = QPushButton("バージョン情報", self._menu_panel)
+        ver_btn.setStyleSheet(
+            "QPushButton { background-color: rgba(255,255,255,0.12); color: white; padding: 8px; }"
+        )
+        ver_btn.clicked.connect(self._action_version)
+        self._menu_panel_layout.addWidget(ver_btn)
+
+    def _update_history_panel(self) -> None:
+        """右端の履歴パネル内容を更新。"""
+        # 既存削除
+        while self._history_panel_layout.count():
+            item = self._history_panel_layout.takeAt(0)
+            if item is None:
+                continue
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        title = QLabel("完了済み", self._history_panel)
+        title.setStyleSheet("QLabel { color: #101010; font-size: 16px; font-weight: bold; }")
+        self._history_panel_layout.addWidget(title)
+
+        for t in self.tasks.get("完了済みのタスク", [])[:5]:
+            card = QFrame(self._history_panel)
+            card.setStyleSheet(
+                "QFrame { background-color: rgba(200, 200, 255, 140); border: 1px solid #101010; border-radius: 6px; }"
+            )
+            card_layout = QVBoxLayout()
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            card_layout.setSpacing(4)
+            card.setLayout(card_layout)
+
+            lbl = QLabel(t.get("title", "(無題)"), card)
+            lbl.setStyleSheet("QLabel { color: #101010; font-size: 14px; }")
+            card_layout.addWidget(lbl)
+            self._history_panel_layout.addWidget(card)
+
+        self._history_panel.adjustSize()
+        self._position_history_panel(hidden=True)
+
+    def _position_history_panel(self, hidden: bool) -> None:
+        width = min(280, max(220, self.width() // 4))
+        height = self.height()
+        self._history_panel.resize(width, height)
+        x = self.width() if hidden else self.width() - width
+        self._history_panel.move(x, 0)
+
+    def _show_history_panel(self) -> None:
+        self._position_history_panel(hidden=True)
+        self._history_panel.show()
+        self._history_panel.raise_()
+        anim = QPropertyAnimation(self._history_panel, b"pos", self)
+        anim.setDuration(200)
+        anim.setStartValue(QPoint(self.width(), 0))
+        anim.setEndValue(QPoint(self.width() - self._history_panel.width(), 0))
+        self._history_panel._anim = anim  # type: ignore[attr-defined]
+        anim.start()
+        self._history_panel_timer.start(3000)
+
+    def _hide_history_panel(self) -> None:
+        if not self._history_panel.isVisible():
+            return
+        anim = QPropertyAnimation(self._history_panel, b"pos", self)
+        anim.setDuration(160)
+        anim.setStartValue(self._history_panel.pos())
+        anim.setEndValue(QPoint(self.width(), 0))
+        self._history_panel._anim = anim  # type: ignore[attr-defined]
+        def _finish():
+            self._history_panel.hide()
+        anim.finished.connect(_finish)
+        anim.start()
+
+    def _nudge_history_panel(self) -> None:
+        """完了後の“ぴょこっ”演出。"""
+        if not self._history_panel.isVisible():
+            self._history_panel.show()
+        self._history_panel.raise_()
+        base_x = self.width() - self._history_panel.width()
+        self._history_panel.move(self.width(), 0)
+        anim = QPropertyAnimation(self._history_panel, b"pos", self)
+        anim.setDuration(120)
+        anim.setStartValue(QPoint(self.width(), 0))
+        anim.setEndValue(QPoint(base_x - 20, 0))
+        self._history_panel._anim = anim  # type: ignore[attr-defined]
+        def _back():
+            anim2 = QPropertyAnimation(self._history_panel, b"pos", self)
+            anim2.setDuration(120)
+            anim2.setStartValue(QPoint(base_x - 20, 0))
+            anim2.setEndValue(QPoint(self.width(), 0))
+            self._history_panel._anim2 = anim2  # type: ignore[attr-defined]
+            anim2.finished.connect(self._history_panel.hide)
+            anim2.start()
+        anim.finished.connect(_back)
+        anim.start()
+
+    def _show_menu_panel(self) -> None:
+        h = min(260, max(200, self.height() // 3))
+        self._menu_panel.resize(self.width(), h)
+        self._menu_panel.move(0, -h)
+        self._menu_panel.show()
+        self._menu_panel.raise_()
+        anim = QPropertyAnimation(self._menu_panel, b"pos", self)
+        anim.setDuration(150)
+        anim.setStartValue(QPoint(0, -h))
+        anim.setEndValue(QPoint(0, 0))
+        self._menu_panel._anim = anim  # type: ignore[attr-defined]
+        anim.start()
+
+    def _hide_menu_panel(self) -> None:
+        if not self._menu_panel.isVisible():
+            return
+        h = self._menu_panel.height()
+        anim = QPropertyAnimation(self._menu_panel, b"pos", self)
+        anim.setDuration(120)
+        anim.setStartValue(self._menu_panel.pos())
+        anim.setEndValue(QPoint(0, -h))
+        self._menu_panel._anim = anim  # type: ignore[attr-defined]
+        def _finish():
+            self._menu_panel.hide()
+        anim.finished.connect(_finish)
+        anim.start()
+
+    def _action_exit(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _action_version(self) -> None:
+        QMessageBox.information(self, "バージョン情報", "Shibarania v0.9")
+
+    def _edge_hold_timeout(self) -> None:
+        # キャンセル時の保持後にクローズ
+        if self._edge_mode == "right":
+            self._hide_history_panel()
+        if self._edge_mode == "top":
+            self._hide_menu_panel()
+
+    def eventFilter(self, a0, a1):
+        if a1 is None:
+            return super().eventFilter(a0, a1)
+        if a1.type() == QEvent.Type.MouseButtonPress and isinstance(a1, QMouseEvent):
+            # メニュー表示中に外側クリックで閉じる
+            if self._menu_panel.isVisible() and a1.pos().y() > self._menu_panel.height():
+                self._hide_menu_panel()
+                return True
+        if a1.type() == QEvent.Type.MouseButtonPress and isinstance(a1, QMouseEvent):
+            pos = a1.pos()
+            if pos.x() >= self.width() - 60:
+                self._edge_mode = "right"
+                self._edge_press_pos = pos
+                self._edge_swipe_distance = 0
+                return False
+            if pos.y() <= 40:
+                self._edge_mode = "top"
+                self._edge_press_pos = pos
+                self._edge_swipe_distance = 0
+                return False
+        if a1.type() == QEvent.Type.MouseMove and self._edge_press_pos is not None and isinstance(a1, QMouseEvent):
+            pos = a1.pos()
+            if self._edge_mode == "right":
+                self._edge_swipe_distance = max(0, self._edge_press_pos.x() - pos.x())
+                return False
+            if self._edge_mode == "top":
+                self._edge_swipe_distance = max(0, pos.y() - self._edge_press_pos.y())
+                return False
+        if a1.type() == QEvent.Type.MouseButtonRelease and self._edge_press_pos is not None:
+            if self._edge_mode == "right":
+                if self._edge_swipe_distance >= 40:
+                    self._show_history_panel()
+                else:
+                    self._edge_hold_timer.start(500)
+            elif self._edge_mode == "top":
+                if self._edge_swipe_distance >= 30:
+                    self._show_menu_panel()
+                else:
+                    # タップでは開かない
+                    self._edge_hold_timer.start(500)
+            self._edge_press_pos = None
+            self._edge_swipe_distance = 0
+            return False
+        return super().eventFilter(a0, a1)
 
 
 class Task(typing.TypedDict):
