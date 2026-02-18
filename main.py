@@ -20,8 +20,18 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 from PyQt6.QtGui import QPalette, QColor, QDrag, QPixmap, QMouseEvent
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPropertyAnimation, QPoint, QEvent
+from PyQt6.QtCore import (
+    Qt,
+    pyqtSignal,
+    QTimer,
+    QMimeData,
+    QPropertyAnimation,
+    QPoint,
+    QEvent,
+    QUrl,
+)
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+from PyQt6.QtMultimedia import QSoundEffect, QMediaPlayer, QAudioOutput
 import backend
 try:
     from googleapiclient.errors import HttpError
@@ -105,9 +115,18 @@ class TaskWidget(QFrame):
     def _show_hint_arrow(self) -> None:
         if self._hint_label is not None:
             return
-        self._hint_label = QLabel("→", self)
-        self._hint_label.setStyleSheet("QLabel { color: rgba(255,255,255,180); font-size: 20px; }")
-        self._hint_label.adjustSize()
+        self._hint_label = QLabel(self)
+        # 画像ヒント（半透明）
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        img_path = os.path.join(base_dir, "assets", "yajirushi.png")
+        pix = QPixmap(img_path)
+        if not pix.isNull():
+            self._hint_label.setPixmap(pix)
+            self._hint_label.adjustSize()
+        else:
+            self._hint_label.setText("→")
+            self._hint_label.setStyleSheet("QLabel { color: rgba(255,255,255,180); font-size: 20px; }")
+            self._hint_label.adjustSize()
         self._hint_label.move(self.width() - self._hint_label.width() - 8, 8)
         self._hint_effect = QGraphicsOpacityEffect(self._hint_label)
         self._hint_label.setGraphicsEffect(self._hint_effect)
@@ -258,16 +277,23 @@ class Shibarania(QWidget):
         # ポップアップ表示時間（ミリ秒）
         self.popup_duration_ms: int = 4000
 
+        # 完了時の効果音
+        self._complete_sound: QSoundEffect | None = None
+        self._complete_player: QMediaPlayer | None = None
+        self._complete_audio: QAudioOutput | None = None
+        sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "決定ボタンを押す1.mp3")
+        self._setup_complete_sound(sound_path)
+
         # Google Tasklist ID（先頭のリストを利用）
         self.google_tasklist_id: typing.Optional[str] = None
 
         self.tasks = {
             "現在のタスク": [
-                {"title": "TaskB", "description": "Example"},
-                {"title": "TaskD", "description": " "},
-                {"title": "TaskE", "description": " "},
-                {"title": "TaskF", "description": " "},
-                {"title": "TaskG", "description": " "},
+                {"title": "TaskB", "description": "何らかの問題により"},
+                {"title": "TaskD", "description": "Google Tasksからの読み込みに"},
+                {"title": "TaskE", "description": "失敗しているようです。"},
+                {"title": "TaskF", "description": "ネットワーク接続や"},
+                {"title": "TaskG", "description": "認可設定を確認してください。"},
             ],
             "完了済みのタスク": [
                 {"title": "TaskO", "description": " "},
@@ -641,6 +667,7 @@ class Shibarania(QWidget):
                 self._show_completion_popup(title=task.get("title", ""), duration_ms=self.popup_duration_ms)
                 self._show_completion_effects()
                 self._nudge_history_panel()
+                self._play_complete_sound()
             except Exception:
                 pass
 
@@ -844,6 +871,34 @@ class Shibarania(QWidget):
 
         anim.finished.connect(_cleanup)
         anim.start()
+
+    def _setup_complete_sound(self, sound_path: str) -> None:
+        if not os.path.exists(sound_path):
+            return
+        ext = os.path.splitext(sound_path)[1].lower()
+        if ext in (".wav", ".ogg"):
+            snd = QSoundEffect(self)
+            snd.setSource(QUrl.fromLocalFile(sound_path))
+            snd.setVolume(0.6)
+            self._complete_sound = snd
+            return
+        # mp3 は QMediaPlayer を使う
+        audio = QAudioOutput(self)
+        audio.setVolume(0.6)
+        player = QMediaPlayer(self)
+        player.setAudioOutput(audio)
+        player.setSource(QUrl.fromLocalFile(sound_path))
+        self._complete_audio = audio
+        self._complete_player = player
+
+    def _play_complete_sound(self) -> None:
+        if self._complete_sound is not None:
+            if self._complete_sound.isLoaded():
+                self._complete_sound.play()
+            return
+        if self._complete_player is not None:
+            self._complete_player.stop()
+            self._complete_player.play()
 
     def _build_menu_contents(self) -> None:
         """上端メニューの仮コンテンツを構築。"""
