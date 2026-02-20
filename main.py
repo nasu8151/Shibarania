@@ -33,6 +33,8 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect
 from PyQt6.QtMultimedia import QSoundEffect, QMediaPlayer, QAudioOutput
 import backend
+from theme_manager import ThemeManager, LIGHT_THEME, DARK_THEME
+
 try:
     from googleapiclient.errors import HttpError
 except Exception:
@@ -44,17 +46,23 @@ class TaskWidget(QFrame):
         super().__init__()
         self.task_data = task_data
         self.section = section
-        self.setFrameShape(QFrame.Shape.Box)
-        self.setLineWidth(1)
+        self.setObjectName("TaskCard")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        
         self._press_timer = QTimer(self)
         self._press_timer.setSingleShot(True)
         self._press_timer.timeout.connect(self._on_long_press)
+
+        # ヒント矢印用タイマー
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._show_hint_arrow)
+        
+        # ヒント矢印機能を削除（モダン化に伴い不要と判断、または後で復活）
         self._press_feedback_timer = QTimer(self)
         self._press_feedback_timer.setSingleShot(True)
         self._press_feedback_timer.timeout.connect(self._apply_press_feedback)
+        
         self._press_pos: QPoint | None = None
         self._long_pressed = False
         self._hint_label: QLabel | None = None
@@ -62,6 +70,39 @@ class TaskWidget(QFrame):
         self._press_active = False
         self._is_focus = False
         self._focus_shadow: QGraphicsDropShadowEffect | None = None
+        
+        # 初期スタイル適用
+        self._update_style()
+        self._apply_normal_shadow()
+
+    def _apply_normal_shadow(self):
+        try:
+            shadow = QGraphicsDropShadowEffect(self)
+            # テーマに合わせて調整（ガイド準拠：Blur 20px）
+            shadow.setBlurRadius(20)
+            shadow.setOffset(0, 6)
+            shadow.setColor(QColor(ThemeManager().current_theme.shadow))
+            self.setGraphicsEffect(shadow)
+        except Exception:
+            pass
+
+    def enterEvent(self, event):
+        if not self._long_pressed and not self._is_focus:
+            # ホバー時はわずかに明るく（QSSで十分機能しない場合のフォールバック）
+            # ThemeManagerのget_style_sheetですでに :hover を定義しているので
+            # ここでは何もしない、あるいはQSSが効かない場合に備えて手動設定する
+            # QFrameはQSSの:hoverが効きにくい場合があるためここで補完
+            is_dark = ThemeManager().is_dark
+            bg = "#252525" if is_dark else "#FAFAFA"
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._long_pressed and not self._is_focus:
+            # 元に戻す
+            bg = ThemeManager().current_theme.card_bg
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
+        super().leaveEvent(event)
 
     def mousePressEvent(self, a0):
         if not a0:
@@ -78,11 +119,9 @@ class TaskWidget(QFrame):
         if not a0 or self._press_pos is None:
             return
         if not self._long_pressed:
-            # 長押し前に大きく動いたらキャンセル
             if (a0.pos() - self._press_pos).manhattanLength() > 6:
                 self._cancel_press()
             return
-        # 長押し成立後はドラッグ開始
         self._start_drag()
 
     def mouseReleaseEvent(self, a0):
@@ -90,51 +129,75 @@ class TaskWidget(QFrame):
         super().mouseReleaseEvent(a0)
 
     def _apply_press_feedback(self) -> None:
-        # 影を少し濃く、背景色をわずかに暗く
         self._press_active = True
         self._update_style()
 
     def _on_long_press(self) -> None:
         self._long_pressed = True
-        # 浮かせる
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 3)
-        shadow.setColor(QColor(0, 0, 0, 80))
-        self.setGraphicsEffect(shadow)
-        # ヒント矢印は150ms後
-        self._hint_timer.start(150)
-        # 長押し成立時に完了パネルを表示
+        # モダンな浮き上がり効果 + 差し色背景
         try:
-            win = self.window()
-            if hasattr(win, "_show_history_panel"):
-                win._show_history_panel()
+            accent = ThemeManager().current_theme.accent
+            c = QColor(accent)
+            # Alpha 25 (~10%)
+            bg_color = f"rgba({c.red()}, {c.green()}, {c.blue()}, 25)"
+            
+            # ボーダーもアクセントにして「掴んでいる」感を出す
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg_color}; border: 2px solid {accent}; border-radius: 14px; }}")
+
+            # 影を少し強調するが、ガイドに従い控えめに（Lift Effect）
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(30)
+            shadow.setOffset(0, 10)
+            shadow.setColor(QColor(ThemeManager().current_theme.shadow))
+            self.setGraphicsEffect(shadow)
+            
+            # ヒント矢印を表示（少し遅らせて）
+            self._hint_timer.start(150)
+            
         except Exception:
             pass
 
     def _show_hint_arrow(self) -> None:
+        """長押し時に右側に完了を促す矢印を表示"""
         if self._hint_label is not None:
             return
+        
         self._hint_label = QLabel(self)
-        # 画像ヒント（半透明）
+        self._hint_label.setObjectName("HintArrow")
+        
+        # 矢印画像の読み込み
         base_dir = os.path.dirname(os.path.abspath(__file__))
         img_path = os.path.join(base_dir, "assets", "yajirushi.png")
         pix = QPixmap(img_path)
+        
         if not pix.isNull():
+            # 画像がある場合
             self._hint_label.setPixmap(pix)
             self._hint_label.adjustSize()
         else:
+            # 画像がない場合はテキストで代用
             self._hint_label.setText("→")
-            self._hint_label.setStyleSheet("QLabel { color: rgba(255,255,255,180); font-size: 20px; }")
+            # アクセントカラーを使用
+            accent = ThemeManager().current_theme.accent
+            self._hint_label.setStyleSheet(f"color: {accent}; font-size: 32px; font-weight: bold; background: transparent;")
             self._hint_label.adjustSize()
-        self._hint_label.move(self.width() - self._hint_label.width() - 8, 8)
+            
+        # 右端に配置
+        margin = 16
+        x = self.width() - self._hint_label.width() - margin
+        y = (self.height() - self._hint_label.height()) // 2
+        self._hint_label.move(x, y)
+        
+        # フェードインアニメーション
         self._hint_effect = QGraphicsOpacityEffect(self._hint_label)
         self._hint_label.setGraphicsEffect(self._hint_effect)
+        
         anim = QPropertyAnimation(self._hint_effect, b"opacity", self)
-        anim.setDuration(150)
+        anim.setDuration(300)
         anim.setStartValue(0.0)
-        anim.setEndValue(0.35)
-        self._hint_label._anim = anim  # type: ignore[attr-defined]
+        anim.setEndValue(0.8)
+        self._hint_label._anim = anim # type: ignore
+        
         self._hint_label.show()
         anim.start()
 
@@ -147,59 +210,83 @@ class TaskWidget(QFrame):
             "from": self.section,
         }
         mime.setData("application/x-shibarania-task", json.dumps(payload).encode("utf-8"))
+        
         drag = QDrag(self)
         drag.setMimeData(mime)
-        drag.exec()
+        
+        # ドラッグ中のピクチャを作成（半透明のカード画像など）
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(self._press_pos if self._press_pos else QPoint(pixmap.width() // 2, pixmap.height() // 2))
+
+        # ドラッグ開始時に自分自身を隠すことで「持ち上げた」感を出す
+        self.hide()
+
+        result = drag.exec(Qt.DropAction.MoveAction)
+        
+        # ドラッグ終了後の処理
         self._cancel_press()
+        # 万が一ドロップ先で適切に処理されなかった場合（移動せずキャンセルされた場合など）は再表示
+        # ただし移動成功時は refresh_ui で再描画されるため、ここではとりあえず再表示して問題ない
+        self.show()
+        self._apply_normal_shadow()
 
     def _cancel_press(self) -> None:
         self._press_timer.stop()
         self._press_feedback_timer.stop()
         self._hint_timer.stop()
-        self._press_pos = None
-        self._long_pressed = False
-        self._press_active = False
-        # フォーカス影を維持
-        if self._is_focus:
-            try:
-                shadow = QGraphicsDropShadowEffect(self)
-                shadow.setBlurRadius(22)
-                shadow.setOffset(0, 4)
-                shadow.setColor(QColor(0, 0, 0, 90))
-                self._focus_shadow = shadow
-                self.setGraphicsEffect(shadow)
-            except Exception:
-                self._focus_shadow = None
-                self.setGraphicsEffect(None)
-        else:
-            self.setGraphicsEffect(None)
-        self._update_style()
+        
+        # ヒント表示の終了
         if self._hint_label:
             self._hint_label.hide()
             self._hint_label.deleteLater()
             self._hint_label = None
             self._hint_effect = None
+        
+        self._press_pos = None
+        self._long_pressed = False
+        self._press_active = False
+        
+        # ドラッグ終了後は通常のスタイルに戻す
+        # フォーカスされている場合はフォーカス用のボーダーを維持
+        if self._is_focus:
+            # set_focus_enabledで設定されたスタイルに戻す(style polish)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self._apply_normal_shadow()
+        else:
+            # 通常状態に戻す
+            bg = ThemeManager().current_theme.card_bg
+            # QSSのhoverなどが効くように styleSheet をクリアするか、明示的に設定
+            # ここでは明示的に戻す（QSSとの競合を避けるため）
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
+            self._apply_normal_shadow()
 
     def set_focus_enabled(self, enabled: bool) -> None:
         self._is_focus = enabled
+        self.setProperty("is_focus", enabled)
+        
+        # フォーカス時はアクセントカラーの枠線
         if enabled:
-            shadow = QGraphicsDropShadowEffect(self)
-            shadow.setBlurRadius(22)
-            shadow.setOffset(0, 4)
-            shadow.setColor(QColor(0, 0, 0, 90))
-            self._focus_shadow = shadow
-            self.setGraphicsEffect(shadow)
+            accent = ThemeManager().current_theme.focus_border
+            bg = ThemeManager().current_theme.card_bg
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid {accent}; border-radius: 14px; }}")
         else:
-            self._focus_shadow = None
-        self._update_style()
+            # 通常
+            bg = ThemeManager().current_theme.card_bg
+            self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
+
+        self.style().unpolish(self)
+        self.style().polish(self)
+        
+        # 子要素のラベルなども更新
+        for child in self.findChildren(QLabel):
+            child.setProperty("is_focus", enabled)
+            child.style().unpolish(child)
+            child.style().polish(child)
 
     def _update_style(self) -> None:
-        styles = []
-        if self._is_focus:
-            styles.append("QFrame { border: 2px solid rgba(120, 200, 255, 120); }")
-        if self._press_active:
-            styles.append("QFrame { background-color: rgba(0,0,0,0.03); }")
-        self.setStyleSheet(" ".join(styles))
+        pass # Stylesheet applied globally or via ThemeManager
 
 
 class SectionWidget(QWidget):
@@ -229,22 +316,68 @@ class SectionWidget(QWidget):
         if not mime:
             a0.ignore()
             return
+
         if mime.hasFormat("application/x-shibarania-task"):
             a0.acceptProposedAction()
+            
+            # 親ウィンドウへ「覗き見（peek）」演出を依頼
+            win = self.window()
+            if hasattr(win, "peek_history_panel"):
+                # 親ウィンドウ上でのX座標を取得
+                global_pos = self.mapToGlobal(a0.position().toPoint())
+                win_pos = win.mapFromGlobal(global_pos)
+                x = win_pos.x()
+                win_w = win.width()
+                
+                # 画面右側にあれば「完了ゾーン」として扱う準備
+                # 右側30%くらいから反応し始める
+                threshold = win_w * 0.7
+                if x > threshold:
+                    # 右端に近づくほど offset を大きくする (20px -> 120px)
+                    offset = max(20, min(120, int((x - threshold) / 2)))
+                    win.peek_history_panel(offset)
+                else:
+                    win.peek_history_panel(0)
         else:
             a0.ignore()
+    
+    def dragLeaveEvent(self, a0):
+        # ドラッグが外れたら戻す
+        win = self.window()
+        if hasattr(win, "peek_history_panel"):
+            win.peek_history_panel(0)
+        super().dragLeaveEvent(a0)
     
     def dropEvent(self, a0):
         if not a0:
             return
+        
+        # ドロップされたらパネルを戻す
+        win = self.window()
+        is_completed_zone = False
+        
+        if hasattr(win, "peek_history_panel"):
+            win.peek_history_panel(0)
+            # ドロップ位置判定
+            global_pos = self.mapToGlobal(a0.position().toPoint())
+            win_pos = win.mapFromGlobal(global_pos)
+            # 画面の6割より右なら完了扱い
+            if win_pos.x() > win.width() * 0.6:
+                is_completed_zone = True
+             
         mime = a0.mimeData()
         if not mime:
             a0.ignore()
             return
+
         try:
             data = mime.data("application/x-shibarania-task")
             payload = json.loads(bytes(data.data()).decode("utf-8"))
-            self.dropped.emit(payload, self.section_name, self.mapToGlobal(a0.position().toPoint()))
+            
+            # 完了ゾーンまたは自分自身のセクション名
+            destination = "完了済みのタスク" if is_completed_zone else self.section_name
+            self.dropped.emit(payload, destination, self.mapToGlobal(a0.position().toPoint()))
+            
             a0.acceptProposedAction()
         except Exception:
             a0.ignore()
@@ -256,6 +389,72 @@ class Shibarania(QWidget):
     request_delete_task = pyqtSignal(str)
     request_move_task = pyqtSignal(str, str)  # title, destination section
     request_set_tasks = pyqtSignal(list, list)  # current, done
+
+    def dragEnterEvent(self, a0):
+        if not a0:
+            return
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
+        if mime.hasFormat("application/x-shibarania-task"):
+            a0.acceptProposedAction()
+        else:
+            a0.ignore()
+            
+    def dragMoveEvent(self, a0):
+        if not a0:
+            return
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
+        if mime.hasFormat("application/x-shibarania-task"):
+            a0.acceptProposedAction()
+            
+            # 右側でドラッグしていればパネルをチラ見せ
+            # ここではShibarania全体での座標なので、右側の例えば30%領域に入れば完了の意思ありとみなす
+            x = a0.position().x()
+            if x > self.width() * 0.7:
+                self.peek_history_panel(max(20, int((x - self.width() * 0.7) / 2))) # 深く入れるほど大きく出す
+            else:
+                self.peek_history_panel(0)
+        else:
+            a0.ignore()
+
+    def dragLeaveEvent(self, a0):
+        # ドラッグが外れたら戻す
+        self.peek_history_panel(0)
+        super().dragLeaveEvent(a0)
+
+    def dropEvent(self, a0):
+        if not a0:
+            return
+        self.peek_history_panel(0)
+        
+        mime = a0.mimeData()
+        if not mime:
+            a0.ignore()
+            return
+        
+        # 右側にドロップされたら「完了」とみなす
+        if a0.position().x() > self.width() * 0.6: # 判定条件：画面の6割より右
+            try:
+                data = mime.data("application/x-shibarania-task")
+                payload = json.loads(bytes(data.data()).decode("utf-8"))
+                # 完了とみなす
+                self.on_task_dropped(payload, "完了済みのタスク", self.mapToGlobal(a0.position().toPoint()))
+                a0.acceptProposedAction()
+            except Exception:
+                a0.ignore()
+        else:
+            # 完了エリア外であっても、元のSectionWidgetで拾われなかった場合
+            # 何もしない (ignore) ことでキャンセル扱いになるか
+            # あるいは「現在のタスク」に戻す処理が必要な場合もあるが、
+            # SectionWidgetがdropEventを持っていないと親に伝播する。
+            # 今回はSectionWidgetもacceptDropsを設定しているので、
+            # 左側ならSectionWidgetが先に処理するはず。
+            a0.ignore()
 
     def __init__(self, fullscreen: bool = False):
         super().__init__()
@@ -287,6 +486,8 @@ class Shibarania(QWidget):
         # Google Tasklist ID（先頭のリストを利用）
         self.google_tasklist_id: typing.Optional[str] = None
 
+        self._peek_offset = 0
+
         self.tasks = {
             "現在のタスク": [
                 {"title": "TaskB", "description": "何らかの問題により"},
@@ -307,19 +508,17 @@ class Shibarania(QWidget):
             layout.setSpacing(8)
 
         # セクション作成
-        current_section = self._create_section(
-            "現在のタスク", QColor(200, 255, 200), self.tasks["現在のタスク"]
-        )
+        current_section = self._create_section("現在のタスク", self.tasks["現在のタスク"])
         current_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(current_section, 2)
 
         self.setLayout(layout)
-
+        
         # 完了済み履歴パネル（右端スワイプ）
         self._history_panel = SectionWidget("完了済みのタスク")
         self._history_panel.setParent(self)
-        self._history_panel.setAutoFillBackground(True)
-        self._history_panel.setStyleSheet("QWidget { background-color: rgba(200, 200, 255, 180); }")
+        self._history_panel.entered = False # type: ignore
+        # テーマ依存スタイルは _apply_theme で設定
         self._history_panel.dropped.connect(self.on_task_dropped)
         self._history_panel_layout = QVBoxLayout()
         self._history_panel_layout.setContentsMargins(12, 12, 12, 12)
@@ -339,6 +538,12 @@ class Shibarania(QWidget):
         self._menu_panel.setLayout(self._menu_panel_layout)
         self._menu_panel.hide()
         self._build_menu_contents()
+        
+        # ドラッグ&ドロップの受け入れ（完了エリアの検出用）
+        self.setAcceptDrops(True)
+        
+        # テーマを初期適用
+        self._apply_theme()
 
         self.installEventFilter(self)
 
@@ -429,91 +634,124 @@ class Shibarania(QWidget):
                     return True
         return False
 
-    def _create_section(self, title, color, tasks):
+    def _apply_theme(self) -> None:
+        mgr = ThemeManager()
+        self.setStyleSheet(mgr.get_style_sheet())
+        
+        # 完了パネルにも新しいスタイルを適用するためにID更新などをトリガー
+        self._history_panel.setObjectName("HistoryPanel")
+        self._history_panel.style().unpolish(self._history_panel)
+        self._history_panel.style().polish(self._history_panel)
+        
+        # 既存子要素にも適用
+        for w in self.findChildren(QLabel):
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _create_section(self, title, tasks):
         section_widget = SectionWidget(title)
-        section_widget.setAutoFillBackground(True)
-        section_widget.setPalette(self._create_palette(color))
         section_widget.dropped.connect(self.on_task_dropped)
 
         section_layout = QVBoxLayout()
         if self.is_fullscreen:
-            section_layout.setContentsMargins(6, 6, 6, 6)
-            section_layout.setSpacing(6)
+            section_layout.setContentsMargins(12, 12, 12, 12)
+            section_layout.setSpacing(12)
+        else:
+            section_layout.setContentsMargins(8, 8, 8, 8)
+            section_layout.setSpacing(8)
 
-        title_label = QLabel(title)
-        title_label.setAutoFillBackground(True)
-        title_label.setPalette(self._create_palette(color))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        # タイトルラベル（左バー付き）
+        title_label = QLabel(" " + title) # パディング調整のためスペース追加
+        title_label.setObjectName("SectionTitle")
+        # フォントサイズのみスケールに合わせて上書き
         title_font = int(28 * self.ui_scale)
-        title_label.setStyleSheet(f"QLabel {{ color : #101010; font-size : {title_font}px; padding: 0px; }}")
-        title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        section_layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        title_label.setStyleSheet(f"font-size: {title_font}px; margin-bottom: 8px;") 
+        title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        section_layout.addWidget(title_label)
 
         if title == "現在のタスク":
+            scroll_area = QWidget() # グリッドを配置するためのコンテナ
             current_grid = QGridLayout()
-            section_layout.addLayout(current_grid)
+            current_grid.setSpacing(16)
+            current_grid.setContentsMargins(0, 0, 0, 0)
+            
             row = 0
             col = 0
             for idx, task in enumerate(tasks):
                 task_frame = TaskWidget(task, title)
                 # フォーカスタスクの強調（先頭を採用）
                 if idx == 0:
-                    self._apply_focus_style(task_frame)
+                    task_frame.set_focus_enabled(True)
                     self._focus_task_id = task.get("id") or task.get("title")
 
                 task_layout = QVBoxLayout()
+                task_layout.setContentsMargins(16, 16, 16, 16)
+                
+                # タイトル
                 task_title_label = QLabel(task["title"])
-                task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_font = int(24 * self.ui_scale)
-                task_title_label.setStyleSheet(
-                    f"QLabel {{ font-weight: bold; color : #101010; font-size : {task_title_font}px;}}"
-                )
-                task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                task_title_label.setObjectName("TaskTitle")
+                task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                task_title_label.setWordWrap(True)
                 task_layout.addWidget(task_title_label)
 
+                # 説明
                 if task.get("description"):
                     task_content_label = QLabel(task["description"])
-                    task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_font = int(18 * self.ui_scale)
-                    task_content_label.setStyleSheet(
-                        f"QLabel {{ color : #101010; font-size : {task_content_font}px; }}"
-                    )
+                    task_content_label.setObjectName("TaskDesc")
+                    task_content_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+                    task_content_label.setWordWrap(True)
                     task_layout.addWidget(task_content_label)
+                
+                # スペーサーで上詰め
+                task_layout.addStretch()
 
                 task_frame.setLayout(task_layout)
-                current_grid.addWidget(task_frame, row, col)
-                col += 1
-                if col >= 2:
+                
+                # フォーカスタスクは横幅いっぱい、それ以外はグリッド
+                if idx == 0:
+                    current_grid.addWidget(task_frame, 0, 0, 1, 2) # colspan 2
+                    row = 1
                     col = 0
-                    row += 1
+                else:
+                    current_grid.addWidget(task_frame, row, col)
+                    col += 1
+                    if col >= 2:
+                        col = 0
+                        row += 1
+            section_layout.addLayout(current_grid)
+            section_layout.addStretch() # 下余白
         else:
-            for task in tasks:
-                task_frame = TaskWidget(task, title)
-
-                task_layout = QVBoxLayout()
-                task_title_label = QLabel(task["title"])
-                task_title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-                task_title_font = int(24 * self.ui_scale)
-                task_title_label.setStyleSheet(
-                    f"QLabel {{ font-weight: bold; color : #101010; font-size : {task_title_font}px;}}"
-                )
-                task_title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                task_layout.addWidget(task_title_label)
-
-                if task.get("description"):
-                    task_content_label = QLabel(task["description"])
-                    task_content_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                    task_content_font = int(18 * self.ui_scale)
-                    task_content_label.setStyleSheet(
-                        f"QLabel {{ color : #101010; font-size : {task_content_font}px; }}"
-                    )
-                    task_layout.addWidget(task_content_label)
-
-                task_frame.setLayout(task_layout)
-                section_layout.addWidget(task_frame)
+             # 他のセクション（基本的に使われないか、完了済みリストなど）
+             pass
 
         section_widget.setLayout(section_layout)
         return section_widget
+
+    def peek_history_panel(self, offset: int) -> None:
+        """ドラッグ中に履歴パネルをチラ見せする"""
+        if offset == self._peek_offset:
+            return
+        self._peek_offset = offset
+        
+        # パネルが表示中でない場合のみ処理
+        # if not self._history_panel.isVisible(): ... としたいが、peekのためにshowする必要あり
+        
+        if offset > 0:
+            if not self._history_panel.isVisible():
+                self._position_history_panel(hidden=True)
+                self._history_panel.show()
+                self._history_panel.raise_()
+            
+            target_x = self.width() - offset
+            self._history_panel.move(target_x, 0)
+        else:
+            # offset 0 になったら隠す（ただしスワイプで出しているときは別判定が必要かも）
+            # 今回はドラッグ終了(drop/leave)で0が来るので隠してOK
+            if self._history_panel.isVisible():
+                # アニメーションなしですぐ戻すか、隠す
+                self._history_panel.move(self.width(), 0)
+                self._history_panel.hide()
 
     def _create_palette(self, color):
         palette = QPalette()
@@ -543,12 +781,11 @@ class Shibarania(QWidget):
         else:
             self._clear_layout(main_layout)
 
-        current_section = self._create_section(
-            "現在のタスク", QColor(200, 255, 200), self.tasks.get("現在のタスク", [])
-        )
+        current_section = self._create_section("現在のタスク", self.tasks.get("現在のタスク", []))
         current_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(current_section)
 
+        self._apply_theme()
         self.update()
         self._update_history_panel()
 
@@ -614,22 +851,26 @@ class Shibarania(QWidget):
         if source == destination:
             return
 
-        # 完了判定は「完了パネルが表示中」かつ「ドロップ位置が完了パネル内」
-        if destination == "完了済みのタスク":
-            if not self._history_panel.isVisible():
-                return
-            if global_pos is not None and not self._history_panel.geometry().contains(self.mapFromGlobal(global_pos)):
-                return
+        # 完了などの条件判定
+        # すでに dropEvent 側で「画面右側なら完了」と判断して destination="完了済みのタスク" で渡してきているため
+        # ここでは座標判定などを厳密に行う必要はない。
+        # ただし、完了パネルが全く見えていない状態での誤操作防止等の意図があるなら別だが、
+        # 今回は「完了しやすくする」方向で修正するため、条件を緩和する。
 
         try:
             if not (self.google_tasklist_id and task.get("id")):
-                raise RuntimeError("tasklist_id または task id がありません")
-            creds = backend.get_credentials()
-            service = backend.build_tasks_service(creds)
-            if destination == "完了済みのタスク":
-                backend.complete_task(service, self.google_tasklist_id, task["id"])
-            else:
-                backend.uncomplete_task(service, self.google_tasklist_id, task["id"])
+                # ローカルのみの場合はAPI呼び出ししないが、一応IDチェック
+                # IDがない場合はAPI連携できないので無視するか、ローカル移動のみ行う
+                pass 
+            
+            # API連携部分
+            if self.google_tasklist_id and task.get("id"):
+                creds = backend.get_credentials()
+                service = backend.build_tasks_service(creds)
+                if destination == "完了済みのタスク":
+                    backend.complete_task(service, self.google_tasklist_id, task["id"])
+                else:
+                    backend.uncomplete_task(service, self.google_tasklist_id, task["id"])
         except HttpError as e:
             try:
                 resp = getattr(e, "resp", None)
@@ -654,8 +895,14 @@ class Shibarania(QWidget):
                 self.raise_error(f"Google Tasksへの反映に失敗しました。認可設定を確認してください。\n{str(e)}")
                 return
         except Exception as e:
-            self.raise_error(str(e))
-            return
+            # APIエラーでもローカル移動は試みるか、エラー表示して止めるか。
+            # 今回はエラー表示のみして return (同期ズレを防ぐため)
+            # ただし ID がない(ローカルダミー)の場合は例外が出るので無視して進む
+            if "tasklist_id" in str(e) or "task id" in str(e):
+                pass
+            else:
+                self.raise_error(str(e))
+                return
 
         try:
             self._move_task_dict(task, destination)
@@ -905,6 +1152,14 @@ class Shibarania(QWidget):
         title = QLabel("メニュー", self._menu_panel)
         title.setStyleSheet("QLabel { color: white; font-size: 20px; font-weight: bold; }")
         self._menu_panel_layout.addWidget(title)
+        
+        # テーマ切り替え
+        theme_btn = QPushButton("ダークモード切替", self._menu_panel)
+        theme_btn.setStyleSheet(
+            "QPushButton { background-color: rgba(255,255,255,0.12); color: white; padding: 8px; }"
+        )
+        theme_btn.clicked.connect(self._action_toggle_theme)
+        self._menu_panel_layout.addWidget(theme_btn)
 
         exit_btn = QPushButton("終了", self._menu_panel)
         exit_btn.setStyleSheet(
@@ -919,6 +1174,12 @@ class Shibarania(QWidget):
         )
         ver_btn.clicked.connect(self._action_version)
         self._menu_panel_layout.addWidget(ver_btn)
+        
+    def _action_toggle_theme(self) -> None:
+        ThemeManager().toggle_theme()
+        # メニュー閉じてから適用
+        self._hide_menu_panel()
+        self.refresh_ui()
 
     def _update_history_panel(self) -> None:
         """右端の履歴パネル内容を更新。"""
@@ -930,22 +1191,25 @@ class Shibarania(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
+        
+        # ThemeManagerのQSSに任せるため個別設定は削除
         title = QLabel("完了済み", self._history_panel)
-        title.setStyleSheet("QLabel { color: #101010; font-size: 16px; font-weight: bold; }")
+        # フォントサイズなどの構造的スタイルは残して良いが、色はQSSに任せる
+        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 8px;")
         self._history_panel_layout.addWidget(title)
 
         for t in self.tasks.get("完了済みのタスク", [])[:5]:
             card = QFrame(self._history_panel)
-            card.setStyleSheet(
-                "QFrame { background-color: rgba(200, 200, 255, 140); border: 1px solid #101010; border-radius: 6px; }"
-            )
+            card.setObjectName("CompletedCard") # QSSで装飾
+            
             card_layout = QVBoxLayout()
-            card_layout.setContentsMargins(8, 6, 8, 6)
+            card_layout.setContentsMargins(12, 10, 12, 10)
             card_layout.setSpacing(4)
             card.setLayout(card_layout)
 
             lbl = QLabel(t.get("title", "(無題)"), card)
-            lbl.setStyleSheet("QLabel { color: #101010; font-size: 14px; }")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("font-size: 14px; background: transparent; border: none;")
             card_layout.addWidget(lbl)
             self._history_panel_layout.addWidget(card)
 
