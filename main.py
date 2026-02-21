@@ -153,6 +153,11 @@ class TaskWidget(QFrame):
             
             # ヒント矢印を表示（少し遅らせて）
             self._hint_timer.start(150)
+
+            # 持ち上げ音
+            win = self.window()
+            if hasattr(win, "_play_lift_sound"):
+                win._play_lift_sound()
             
         except Exception:
             pass
@@ -500,6 +505,13 @@ class Shibarania(QWidget):
         self._complete_audio: QAudioOutput | None = None
         sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "決定ボタンを押す1.mp3")
         self._setup_complete_sound(sound_path)
+
+        # 持ち上げ時の効果音
+        self._lift_sound: QSoundEffect | None = None
+        self._lift_player: QMediaPlayer | None = None
+        self._lift_audio: QAudioOutput | None = None
+        lift_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "カーソル移動2.mp3")
+        self._setup_lift_sound(lift_path)
 
         # Google Tasklist ID（先頭のリストを利用）
         self.google_tasklist_id: typing.Optional[str] = None
@@ -1212,6 +1224,33 @@ class Shibarania(QWidget):
         if self._complete_player is not None:
             self._complete_player.stop()
             self._complete_player.play()
+
+    def _setup_lift_sound(self, sound_path: str) -> None:
+        if not os.path.exists(sound_path):
+            return
+        ext = os.path.splitext(sound_path)[1].lower()
+        if ext in (".wav", ".ogg"):
+            snd = QSoundEffect(self)
+            snd.setSource(QUrl.fromLocalFile(sound_path))
+            snd.setVolume(0.4)
+            self._lift_sound = snd
+            return
+        audio = QAudioOutput(self)
+        audio.setVolume(0.4)
+        player = QMediaPlayer(self)
+        player.setAudioOutput(audio)
+        player.setSource(QUrl.fromLocalFile(sound_path))
+        self._lift_audio = audio
+        self._lift_player = player
+
+    def _play_lift_sound(self) -> None:
+        if self._lift_sound is not None:
+            if self._lift_sound.isLoaded():
+                self._lift_sound.play()
+            return
+        if self._lift_player is not None:
+            self._lift_player.stop()
+            self._lift_player.play()
 
     def _build_menu_contents(self) -> None:
         """上端メニューの仮コンテンツを構築。"""
