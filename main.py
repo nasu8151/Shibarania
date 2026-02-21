@@ -78,9 +78,9 @@ class TaskWidget(QFrame):
     def _apply_normal_shadow(self):
         try:
             shadow = QGraphicsDropShadowEffect(self)
-            # テーマに合わせて調整（ガイド準拠：Blur 20px）
-            shadow.setBlurRadius(20)
-            shadow.setOffset(0, 6)
+            # テーマに合わせて調整（ガイド準拠：Blur 8px, Offset 3px, Alpha ~15%） #2
+            shadow.setBlurRadius(8)
+            shadow.setOffset(0, 3)
             shadow.setColor(QColor(ThemeManager().current_theme.shadow))
             self.setGraphicsEffect(shadow)
         except Exception:
@@ -97,12 +97,12 @@ class TaskWidget(QFrame):
             self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
         super().enterEvent(event)
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, a0):
         if not self._long_pressed and not self._is_focus:
             # 元に戻す
             bg = ThemeManager().current_theme.card_bg
             self.setStyleSheet(f"QFrame#TaskCard {{ background-color: {bg}; border: 2px solid transparent; border-radius: 14px; }}")
-        super().leaveEvent(event)
+        super().leaveEvent(a0)
 
     def mousePressEvent(self, a0):
         if not a0:
@@ -364,7 +364,7 @@ class SectionWidget(QWidget):
             # 画面の6割より右なら完了扱い
             if win_pos.x() > win.width() * 0.6:
                 is_completed_zone = True
-             
+            
         mime = a0.mimeData()
         if not mime:
             a0.ignore()
@@ -399,6 +399,11 @@ class Shibarania(QWidget):
             return
         if mime.hasFormat("application/x-shibarania-task"):
             a0.acceptProposedAction()
+            # ドラッグ開始時に少し矢印を表示 #7
+            self._drag_arrow_overlay.setStyleSheet("color: rgba(76, 175, 80, 0.1); font-size: 80px; font-weight: bold;")
+            self._drag_arrow_overlay.adjustSize()
+            self._drag_arrow_overlay.move(self.width() - self._drag_arrow_overlay.width() - 40, (self.height() - self._drag_arrow_overlay.height()) // 2)
+            self._drag_arrow_overlay.show()
         else:
             a0.ignore()
             
@@ -412,11 +417,27 @@ class Shibarania(QWidget):
         if mime.hasFormat("application/x-shibarania-task"):
             a0.acceptProposedAction()
             
-            # 右側でドラッグしていればパネルをチラ見せ
-            # ここではShibarania全体での座標なので、右側の例えば30%領域に入れば完了の意思ありとみなす
             x = a0.position().x()
+            w = self.width()
+
+            # --- 矢印フィードバック更新 #7 ---
+            # 右側に行くほど色が濃くなる
+            progress = max(0.0, min(1.0, (x - w * 0.2) / (w * 0.5)))
+            alpha = 0.1 + (0.9 * progress)
+            
+            # 完了ゾーンに入ったら光る
+            if x > w * 0.6:
+                self._drag_arrow_overlay.setStyleSheet("color: rgba(100, 255, 100, 1.0); font-size: 96px; font-weight: bold;") # Glow effect via vibrant color
+            else:
+                self._drag_arrow_overlay.setStyleSheet(f"color: rgba(76, 175, 80, {alpha:.2f}); font-size: 80px; font-weight: bold;")
+            
+            # 位置調整（中央揃え維持）
+            self._drag_arrow_overlay.adjustSize()
+            self._drag_arrow_overlay.move(w - self._drag_arrow_overlay.width() - 40, (self.height() - self._drag_arrow_overlay.height()) // 2)
+
+            # --- 履歴パネルチラ見せ ---
             if x > self.width() * 0.7:
-                self.peek_history_panel(max(20, int((x - self.width() * 0.7) / 2))) # 深く入れるほど大きく出す
+                self.peek_history_panel(max(20, int((x - self.width() * 0.7) / 2))) 
             else:
                 self.peek_history_panel(0)
         else:
@@ -425,12 +446,14 @@ class Shibarania(QWidget):
     def dragLeaveEvent(self, a0):
         # ドラッグが外れたら戻す
         self.peek_history_panel(0)
+        self._drag_arrow_overlay.hide()
         super().dragLeaveEvent(a0)
 
     def dropEvent(self, a0):
         if not a0:
             return
         self.peek_history_panel(0)
+        self._drag_arrow_overlay.hide()
         
         mime = a0.mimeData()
         if not mime:
@@ -448,12 +471,7 @@ class Shibarania(QWidget):
             except Exception:
                 a0.ignore()
         else:
-            # 完了エリア外であっても、元のSectionWidgetで拾われなかった場合
-            # 何もしない (ignore) ことでキャンセル扱いになるか
-            # あるいは「現在のタスク」に戻す処理が必要な場合もあるが、
-            # SectionWidgetがdropEventを持っていないと親に伝播する。
-            # 今回はSectionWidgetもacceptDropsを設定しているので、
-            # 左側ならSectionWidgetが先に処理するはず。
+            # 完了エリア外
             a0.ignore()
 
     def __init__(self, fullscreen: bool = False):
@@ -521,8 +539,9 @@ class Shibarania(QWidget):
         # テーマ依存スタイルは _apply_theme で設定
         self._history_panel.dropped.connect(self.on_task_dropped)
         self._history_panel_layout = QVBoxLayout()
-        self._history_panel_layout.setContentsMargins(12, 12, 12, 12)
-        self._history_panel_layout.setSpacing(8)
+        # パネル自体は背景透明にして、中身のContainerに背景を持たせるためmargin 0
+        self._history_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self._history_panel_layout.setSpacing(0)
         self._history_panel.setLayout(self._history_panel_layout)
         self._history_panel.hide()
         self._history_panel_timer = QTimer(self)
@@ -539,6 +558,13 @@ class Shibarania(QWidget):
         self._menu_panel.hide()
         self._build_menu_contents()
         
+        # ドラッグ用ヒント矢印オーバーレイ（ウィンドウ全体で管理） #7
+        self._drag_arrow_overlay = QLabel("➜", self)
+        self._drag_arrow_overlay.setStyleSheet("color: rgba(76, 175, 80, 0.4); font-size: 80px; font-weight: bold; background: transparent;")
+        self._drag_arrow_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drag_arrow_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drag_arrow_overlay.hide()
+
         # ドラッグ&ドロップの受け入れ（完了エリアの検出用）
         self.setAcceptDrops(True)
         
@@ -660,15 +686,41 @@ class Shibarania(QWidget):
             section_layout.setContentsMargins(8, 8, 8, 8)
             section_layout.setSpacing(8)
 
+        # ヘッダーレイアウト（タイトル + メニューボタン） #6
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+        
         # タイトルラベル（左バー付き）
-        title_label = QLabel(" " + title) # パディング調整のためスペース追加
+        title_label = QLabel(" " + title) 
         title_label.setObjectName("SectionTitle")
-        # フォントサイズのみスケールに合わせて上書き
         title_font = int(28 * self.ui_scale)
         title_label.setStyleSheet(f"font-size: {title_font}px; margin-bottom: 8px;") 
         title_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        section_layout.addWidget(title_label)
+        header_layout.addWidget(title_label)
+        
+        # 「現在のタスク」の場合だけハンバーガーメニュー追加
+        if title == "現在のタスク":
+            menu_btn = QPushButton("≡", section_widget)
+            menu_btn.setFlat(True)
+            menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # テーマに応じた色設定
+            is_dark = ThemeManager().is_dark
+            base_color = "rgba(255,255,255,0.7)" if is_dark else "rgba(0,0,0,0.3)"
+            hover_color = "rgba(255,255,255,1.0)" if is_dark else "rgba(0,0,0,0.8)"
+            
+            menu_btn.setStyleSheet(f"""
+                QPushButton {{ color: {base_color}; font-size: 32px; border: none; background: transparent; }}
+                QPushButton:hover {{ color: {hover_color}; }}
+            """)
+            menu_btn.clicked.connect(self._show_menu_panel)
+            menu_btn.setFixedSize(48, 48)
+            header_layout.addWidget(menu_btn)
+            
+            # ヘッダー全体をクリックしてもメニュー開く（オプション）
+            # title_label.mousePressEvent = lambda e: self._show_menu_panel()
+        
+        section_layout.addLayout(header_layout)
 
         if title == "現在のタスク":
             scroll_area = QWidget() # グリッドを配置するためのコンテナ
@@ -722,8 +774,8 @@ class Shibarania(QWidget):
             section_layout.addLayout(current_grid)
             section_layout.addStretch() # 下余白
         else:
-             # 他のセクション（基本的に使われないか、完了済みリストなど）
-             pass
+            # 他のセクション（基本的に使われないか、完了済みリストなど）
+            pass
 
         section_widget.setLayout(section_layout)
         return section_widget
@@ -1001,38 +1053,51 @@ class Shibarania(QWidget):
             widget.set_focus_enabled(True)
 
     def _show_completion_effects(self) -> None:
-        """完了時の流れ効果とチェック表示（簡易版）。"""
+        """完了時の流れ効果とチェック表示（簡易版）。 #1 改善"""
+        # 背景に半透明白を敷く（他のタスクを少し透けさせつつ、達成感を演出）
         flow = QWidget(self)
         flow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        flow.setStyleSheet("QWidget { background-color: rgba(255,255,255,0); }")
+        flow.setStyleSheet("QWidget { background-color: rgba(255,255,255,40); }") # 半透明白
         flow.setGeometry(0, 0, self.width(), self.height())
         flow.show()
 
+        # フローライン（少し控えめに）
         bar = QWidget(flow)
-        bar.setStyleSheet("QWidget { background-color: rgba(255,255,255,100); }")
+        bar.setStyleSheet("QWidget { background-color: rgba(100,255,100,80); }") # 緑っぽく変更
         bar.setGeometry(-self.width() // 3, 0, self.width() // 3, self.height())
         bar.show()
 
         anim = QPropertyAnimation(bar, b"pos", self)
-        anim.setDuration(150)
+        anim.setDuration(300)
         anim.setStartValue(QPoint(-self.width() // 3, 0))
         anim.setEndValue(QPoint(self.width(), 0))
         bar._anim = anim  # type: ignore[attr-defined]
 
+        # チェックマーク（縦幅40-50%程度に縮小、フェードアウトを早く）
         check = QLabel("✓", self)
         check.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        check.setStyleSheet("QLabel { color: rgba(200,255,200,200); font-size: 48px; }")
+        check.setStyleSheet("QLabel { color: #2E7D32; font-size: 64px; font-weight: bold; }") # 緑色を濃く
         check.adjustSize()
         check.move((self.width() - check.width()) // 2, (self.height() - check.height()) // 2)
         check.show()
 
+        # チェックマークのアニメーション
         check_effect = QGraphicsOpacityEffect(check)
         check.setGraphicsEffect(check_effect)
         check_anim = QPropertyAnimation(check_effect, b"opacity", self)
-        check_anim.setDuration(250)
-        check_anim.setStartValue(0.0)
-        check_anim.setEndValue(1.0)
+        check_anim.setDuration(500) # 全体として短く (1.0 -> 0.5s)
+        check_anim.setStartValue(1.0)
+        check_anim.setEndValue(0.0)
         check._anim = check_anim  # type: ignore[attr-defined]
+
+        # 背景フェードアウト
+        bg_effect = QGraphicsOpacityEffect(flow)
+        flow.setGraphicsEffect(bg_effect)
+        bg_anim = QPropertyAnimation(bg_effect, b"opacity", self)
+        bg_anim.setDuration(500)
+        bg_anim.setStartValue(1.0)
+        bg_anim.setEndValue(0.0)
+        flow._bg_anim = bg_anim # type: ignore
 
         def _cleanup():
             try:
@@ -1041,9 +1106,10 @@ class Shibarania(QWidget):
             except Exception:
                 pass
 
-        anim.finished.connect(_cleanup)
+        check_anim.finished.connect(_cleanup)
         anim.start()
         check_anim.start()
+        bg_anim.start()
 
     def _show_completion_popup(self, title: str = "", duration_ms: int | None = None) -> None:
         """完了時に画像＋メッセージを中央に表示してフェードアウト。"""
@@ -1183,23 +1249,47 @@ class Shibarania(QWidget):
 
     def _update_history_panel(self) -> None:
         """右端の履歴パネル内容を更新。"""
-        # 既存削除
-        while self._history_panel_layout.count():
-            item = self._history_panel_layout.takeAt(0)
-            if item is None:
-                continue
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+        # 背景レイヤーを追加（うっすら背景をつける）
+        if not self._history_panel.layout():
+            self._history_panel.setLayout(QVBoxLayout())
+            
+        panel_layout = self._history_panel.layout()
+        if not isinstance(panel_layout, QVBoxLayout): # Safety check
+            panel_layout = QVBoxLayout()
+            self._history_panel.setLayout(panel_layout)
+            
+        # クリア
+        while panel_layout.count():
+            item = panel_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        # 背景用オーバーレイコンテナ
+        container = QFrame(self._history_panel)
+        # テーマに応じたうっすら背景色
+        is_dark = ThemeManager().is_dark
+        bg_color = "rgba(0,0,0,0.85)" if is_dark else "rgba(255,255,255,0.95)"
+        border_color = ThemeManager().current_theme.accent
         
-        # ThemeManagerのQSSに任せるため個別設定は削除
-        title = QLabel("完了済み", self._history_panel)
-        # フォントサイズなどの構造的スタイルは残して良いが、色はQSSに任せる
-        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 8px;")
-        self._history_panel_layout.addWidget(title)
-
+        container.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color}; 
+                border-left: 1px solid {border_color};
+                border-top-left-radius: 16px;
+                border-bottom-left-radius: 16px;
+            }}
+        """)
+        
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(16, 20, 16, 20)
+        container_layout.setSpacing(12)
+        
+        title = QLabel("完了済み", container)
+        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 8px; border: none; background: transparent;")
+        container_layout.addWidget(title)
+        
         for t in self.tasks.get("完了済みのタスク", [])[:5]:
-            card = QFrame(self._history_panel)
+            card = QFrame(container)
             card.setObjectName("CompletedCard") # QSSで装飾
             
             card_layout = QVBoxLayout()
@@ -1211,15 +1301,22 @@ class Shibarania(QWidget):
             lbl.setWordWrap(True)
             lbl.setStyleSheet("font-size: 14px; background: transparent; border: none;")
             card_layout.addWidget(lbl)
-            self._history_panel_layout.addWidget(card)
+            container_layout.addWidget(card)
+            
+        container_layout.addStretch()
+        
+        # メインレイアウトに追加（余白なしで埋める）
+        panel_layout.setContentsMargins(0,0,0,0)
+        panel_layout.addWidget(container)
 
         self._history_panel.adjustSize()
         self._position_history_panel(hidden=True)
 
     def _position_history_panel(self, hidden: bool) -> None:
-        width = min(280, max(220, self.width() // 4))
+        width = min(320, max(250, self.width() // 3)) # 少し幅広に #4
         height = self.height()
         self._history_panel.resize(width, height)
+        # 隠すときは画面外右
         x = self.width() if hidden else self.width() - width
         self._history_panel.move(x, 0)
 
@@ -1227,19 +1324,23 @@ class Shibarania(QWidget):
         self._position_history_panel(hidden=True)
         self._history_panel.show()
         self._history_panel.raise_()
+        
+        # 中央寄せスライド（視線誘導のため少し左に食い込ませる） #4
+        target_x = self.width() - self._history_panel.width() - 40
+        
         anim = QPropertyAnimation(self._history_panel, b"pos", self)
-        anim.setDuration(200)
+        anim.setDuration(300)
         anim.setStartValue(QPoint(self.width(), 0))
-        anim.setEndValue(QPoint(self.width() - self._history_panel.width(), 0))
+        anim.setEndValue(QPoint(target_x, 0))
         self._history_panel._anim = anim  # type: ignore[attr-defined]
         anim.start()
-        self._history_panel_timer.start(3000)
+        self._history_panel_timer.start(4000) # 表示時間延長
 
     def _hide_history_panel(self) -> None:
         if not self._history_panel.isVisible():
             return
         anim = QPropertyAnimation(self._history_panel, b"pos", self)
-        anim.setDuration(160)
+        anim.setDuration(200)
         anim.setStartValue(self._history_panel.pos())
         anim.setEndValue(QPoint(self.width(), 0))
         self._history_panel._anim = anim  # type: ignore[attr-defined]
@@ -1251,23 +1352,24 @@ class Shibarania(QWidget):
     def _nudge_history_panel(self) -> None:
         """完了後の“ぴょこっ”演出。"""
         if not self._history_panel.isVisible():
+            self._position_history_panel(hidden=True) # サイズ更新のため呼ぶ
             self._history_panel.show()
         self._history_panel.raise_()
-        base_x = self.width() - self._history_panel.width()
-        self._history_panel.move(self.width(), 0)
+        
+        width = self._history_panel.width()
+        base_x = self.width() - width
+        
+        # 一瞬だけ大きく出して戻る
         anim = QPropertyAnimation(self._history_panel, b"pos", self)
-        anim.setDuration(120)
+        anim.setDuration(250)
         anim.setStartValue(QPoint(self.width(), 0))
-        anim.setEndValue(QPoint(base_x - 20, 0))
+        anim.setEndValue(QPoint(base_x - 60, 0)) # かなり大きく出す
         self._history_panel._anim = anim  # type: ignore[attr-defined]
+        
         def _back():
-            anim2 = QPropertyAnimation(self._history_panel, b"pos", self)
-            anim2.setDuration(120)
-            anim2.setStartValue(QPoint(base_x - 20, 0))
-            anim2.setEndValue(QPoint(self.width(), 0))
-            self._history_panel._anim2 = anim2  # type: ignore[attr-defined]
-            anim2.finished.connect(self._history_panel.hide)
-            anim2.start()
+            # 少し待ってから戻る
+            QTimer.singleShot(600, self._hide_history_panel)
+            
         anim.finished.connect(_back)
         anim.start()
 

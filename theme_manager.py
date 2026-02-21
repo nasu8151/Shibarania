@@ -17,7 +17,7 @@ LIGHT_THEME = ThemeColors(
     card_bg="#FFFFFF",        # 白
     card_text="#222222",      # ほぼ黒
     accent="#4A90E2",         # 青（差し色統一）
-    shadow="rgba(0, 0, 0, 30)", # 薄い影（Alpha 30）
+    shadow="rgba(0, 0, 0, 5)", # 非常に薄い影（Alpha 5）に修正
     focus_border="#4A90E2"
 )
 
@@ -49,6 +49,9 @@ class ThemeManager:
         t = self.current_theme
         hover_bg = "#FAFAFA" if not self.is_dark else "#252525"
         
+        # フォーカスタスク（現在集中すべきタスク）の背景色 #3
+        focus_bg = "#E3F2FD" if not self.is_dark else "#1A2634"
+        
         # タイトル描画用の左バー色はここで定義
         section_title_style = f"""
             QLabel#SectionTitle {{
@@ -56,7 +59,7 @@ class ThemeManager:
                 font-weight: bold;
                 padding-left: 12px;
                 border: none;
-                border-left: 8px solid {t.accent};
+                border-left: 4px solid {t.accent};
                 color: {t.text};
                 background-color: transparent;
             }}
@@ -86,6 +89,7 @@ class ThemeManager:
                 background-color: {hover_bg};
             }}
             QFrame#TaskCard[is_focus="true"] {{
+                background-color: {focus_bg};
                 border: 2px solid {t.focus_border};
             }}
             QLabel#TaskTitle {{
